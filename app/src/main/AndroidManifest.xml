@@ -22,7 +22,7 @@
         android:theme="@style/AppTheme"
         tools:targetApi="31">
         <activity
-            android:name=".MainActivity"
+            android:name="com.mdp_grp12.android_grp12.android_grp12.MainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -30,22 +30,22 @@
             </intent-filter>
         </activity>
         <activity
-            android:name=".Bluetooth"
+            android:name="com.mdp_grp12.android_grp12.android_grp12.Bluetooth"
             android:label="Bluetooth"
             android:exported="true"
-            android:parentActivityName=".MainActivity"/>
+            android:parentActivityName="com.mdp_grp12.android_grp12.android_grp12.MainActivity"/>
 
         <activity
-            android:name=".Message"
+            android:name="com.mdp_grp12.android_grp12.android_grp12.Message"
             android:label="Message"
             android:exported="true"
-            android:parentActivityName=".MainActivity"/>
+            android:parentActivityName="com.mdp_grp12.android_grp12.android_grp12.MainActivity"/>
 
         <activity
-            android:name=".Arena"
+            android:name="com.mdp_grp12.android_grp12.android_grp12.Arena"
             android:label="Arena"
             android:exported="true"
-            android:parentActivityName=".MainActivity"/>
+            android:parentActivityName="com.mdp_grp12.android_grp12.android_grp12.MainActivity"/>
     </application>
 
 </manifest>

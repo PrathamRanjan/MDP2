@@ -1,5 +1,7 @@
-package com.karthikstar.android_grp34;
+package com.mdp_grp12.android_grp12.android_grp12;
 
+import androidx.activity.result.ActivityResultCallback;
+import androidx.activity.result.ActivityResultLauncher;
 import androidx.appcompat.app.AppCompatActivity;
 
 import android.annotation.SuppressLint;
@@ -17,7 +19,6 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.os.Build;
-import android.os.Bundle;
 import android.os.Handler;
 import android.util.DisplayMetrics;
 import android.util.Log;
@@ -25,17 +26,19 @@ import android.view.View;
 import android.widget.AdapterView;
 import android.widget.Button;
 import android.widget.CompoundButton;
-import android.widget.ImageButton;
 import android.widget.ListView;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.RequiresApi;
-import androidx.appcompat.app.AppCompatActivity;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
+import androidx.activity.result.contract.ActivityResultContracts.*;
+
+import com.mdp_grp12.android_grp12.R;
 
 import java.util.ArrayList;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -48,6 +51,8 @@ public class Bluetooth extends AppCompatActivity {
     public DeviceListAdapter myNewDeviceListAdapter;
     public DeviceListAdapter myPairedDeviceListAdapter;
     private String connStatus;
+
+    private ActivityResultLauncher<String[]> requestPermissionLauncher;
 
     boolean retryConnection = false;
     TextView connStatusTextView;
@@ -96,8 +101,24 @@ public class Bluetooth extends AppCompatActivity {
         Log.d(TAG, "width: " + width + ", height: " + height);
 
         myBluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
+
+        requestPermissionLauncher = registerForActivityResult(
+                new RequestMultiplePermissions(),
+                new ActivityResultCallback<Map<String, Boolean>>() {
+                    @Override
+                    public void onActivityResult(Map<String, Boolean> result) {
+                        if (result.getOrDefault(Manifest.permission.BLUETOOTH_SCAN, false) && result.getOrDefault(Manifest.permission.BLUETOOTH_CONNECT, false)) {
+                            Toast.makeText(Bluetooth.this, "Bluetooth permission granted", Toast.LENGTH_SHORT).show();
+                        } else {
+                            Toast.makeText(Bluetooth.this, "Bluetooth permission denied", Toast.LENGTH_SHORT).show();
+                        }
+                    }
+                }
+        );
+
         Switch bluetoothSwitch = (Switch) findViewById(R.id.bluetoothSwitch);
         if (myBluetoothAdapter.isEnabled()) {
+            requestPermissionLauncher.launch(new String[] {Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT});
             bluetoothSwitch.setChecked(true);
             bluetoothSwitch.setText("ON");
         }
@@ -173,6 +194,26 @@ public class Bluetooth extends AppCompatActivity {
             @Override
             public void onCheckedChanged(CompoundButton compoundButton, boolean isChecked) {
                 Log.d(TAG, "onChecked: Switch button toggled. Enabling/Disabling Bluetooth");
+                /*
+                Log.d(TAG, "isChecked: " + isChecked);
+                Log.d(TAG, "myBluetoothAdapter: " + myBluetoothAdapter);
+                Log.d(TAG, "myBluetoothAdapter.isEnabled(): " + myBluetoothAdapter.isEnabled());
+
+
+                Log.d(TAG, "BEFORE myBluetoothAdapter.disable()");
+                //myBluetoothAdapter.disable();
+                //Intent BluetoothDisableIntent = new Intent(BluetoothAdapter.ACTION_STATE_CHANGED);
+                //startActivity(BluetoothDisableIntent);
+
+                Log.d(TAG, "PackageManager.PERMISSION_GRANTED: "+ PackageManager.PERMISSION_GRANTED);
+
+                Log.d(TAG, "checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT): "+checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT));
+                Log.d(TAG, "checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN): "+checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN));
+
+
+                Log.d(TAG, "AFTER myBluetoothAdapter.disable()");
+
+                */
                 if (isChecked) {
                     compoundButton.setText("ON");
                 } else {
@@ -191,7 +232,7 @@ public class Bluetooth extends AppCompatActivity {
 
                         Intent discoverableIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE);
                         discoverableIntent.putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 600);
-                        startActivity(discoverableIntent);
+                        startActivity(discoverableIntent); // Assume always allow
 
                         compoundButton.setChecked(true);
 
@@ -204,6 +245,8 @@ public class Bluetooth extends AppCompatActivity {
                     if (myBluetoothAdapter.isEnabled()) {
                         Log.d(TAG, "enableDisableBT: disabling Bluetooth");
                         myBluetoothAdapter.disable();
+
+                        Log.d(TAG, "myBluetoothAdapter.isEnabled(): " + myBluetoothAdapter.isEnabled());
 
                         IntentFilter BTIntent = new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED);
                         registerReceiver(onAndOffWatcher, BTIntent);
@@ -286,8 +329,15 @@ public class Bluetooth extends AppCompatActivity {
             int permissionCheck = this.checkSelfPermission("Manifest.permission.ACCESS_FINE_LOCATION");
             permissionCheck += this.checkSelfPermission("Manifest.permission.ACCESS_COARSE_LOCATION");
             if (permissionCheck != 0) {
-                this.requestPermissions(new String[] { Manifest.permission.ACCESS_FINE_LOCATION,
-                        Manifest.permission.ACCESS_COARSE_LOCATION }, 1001);
+                Log.d(TAG, "Requesting Permission");
+                /*
+                //this.requestPermissions(new String[] { Manifest.permission.ACCESS_FINE_LOCATION,
+                //        Manifest.permission.ACCESS_COARSE_LOCATION }, 1001);
+                RequestMultiplePermissions permissionRequester = new RequestMultiplePermissions();
+                permissionRequester.(new String[] { Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION });
+                this.requestPermissions(new String[] {Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN}, 1001)
+                */
             }
         } else {
             Log.d(TAG, "checkBTPermissions: No need to check permissions. SDK version < LOLLIPOP.");

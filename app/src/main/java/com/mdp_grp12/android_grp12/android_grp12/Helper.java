@@ -1,5 +1,7 @@
-package com.karthikstar.android_grp34;
+package com.mdp_grp12.android_grp12.android_grp12;
 
+
+import com.mdp_grp12.android_grp12.R;
 
 import java.util.HashMap;
 import java.util.Map;

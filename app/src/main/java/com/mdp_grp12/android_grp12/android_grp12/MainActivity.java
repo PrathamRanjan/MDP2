@@ -1,13 +1,12 @@
-package com.karthikstar.android_grp34;
+package com.mdp_grp12.android_grp12.android_grp12;
 
 import androidx.appcompat.app.AppCompatActivity;
 
 import android.content.Intent;
 import android.os.Bundle;
-import android.view.LayoutInflater;
-import android.view.View;
-import android.widget.Button;
 import android.widget.ImageButton;
+
+import com.mdp_grp12.android_grp12.R;
 
 public class MainActivity extends AppCompatActivity {
 

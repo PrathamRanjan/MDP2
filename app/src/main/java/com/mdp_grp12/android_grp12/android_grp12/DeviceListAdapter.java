@@ -1,4 +1,4 @@
-package com.karthikstar.android_grp34;
+package com.mdp_grp12.android_grp12.android_grp12;
 
 
 import android.annotation.SuppressLint;
@@ -10,6 +10,8 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ArrayAdapter;
 import android.widget.TextView;
+
+import com.mdp_grp12.android_grp12.R;
 
 import java.util.ArrayList;
 

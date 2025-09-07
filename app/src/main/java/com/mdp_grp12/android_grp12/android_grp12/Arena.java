@@ -1,4 +1,4 @@
-package com.karthikstar.android_grp34;
+package com.mdp_grp12.android_grp12.android_grp12;
 
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
@@ -34,6 +34,8 @@ import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 import androidx.recyclerview.widget.RecyclerView;
+
+import com.mdp_grp12.android_grp12.R;
 
 import java.nio.charset.Charset;
 import java.util.ArrayList;

@@ -3,10 +3,10 @@ plugins {
 }
 
 android {
-    compileSdk 33
+    compileSdk 36
 
     defaultConfig {
-        applicationId "com.karthikstar.android_grp34"
+        applicationId "com.mdp_grp12.android_grp12"
         minSdk 24
         targetSdk 32
         versionCode 1
@@ -25,7 +25,7 @@ android {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
-    namespace 'com.karthikstar.android_grp34'
+    namespace 'com.mdp_grp12.android_grp12'
 }
 
 dependencies {

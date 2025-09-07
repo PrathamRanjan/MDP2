@@ -1,4 +1,4 @@
-package com.karthikstar.android_grp34;
+package com.mdp_grp12.android_grp12.android_grp12;
 
 import android.content.Context;
 
@@ -21,6 +21,6 @@ public class ExampleInstrumentedTest {
     public void useAppContext() {
         // Context of the app under test.
         Context appContext = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        assertEquals("com.karthikstar.android_grp34", appContext.getPackageName());
+        assertEquals("com.mdp_grp12.android_grp12", appContext.getPackageName());
     }
 }

@@ -6,7 +6,7 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <com.karthikstar.android_grp34.CanvasGrid
+    <com.mdp_grp12.android_grp12.android_grp12.CanvasGrid
         android:id="@+id/grid"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
