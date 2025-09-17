@@ -1,0 +1,206 @@
+#include "sensors.h"
+#include "tim6_pulse_capt.h"
+
+static const uint8_t GYRO_SENS = GYRO_FULL_SCALE_250DPS;
+static const uint8_t ACCEL_SENS = ACCEL_FULL_SCALE_2G;
+static const float a_irDist = 0.8;
+static const float a_usDist = 0.58;
+static const float a_accel = 0.8;
+static const float a_mag = 0.9;
+static float magOld[2];
+static float headingRaw, headingOld;
+
+// --- Raw debug telemetry (not in Sensors struct) ---
+static uint16_t irRaw[2] = {0, 0};   // [0]=L, [1]=R raw ADC counts
+static float    us_raw_cm = 0.0f;    // last raw ultrasonic distance in cm
+static uint32_t us_last_ms = 0;      // HAL_GetTick() when the above was updated
+
+static float lpf(float a, float old, float new) {
+	return a * old + (1 - a) * new;
+}
+
+static I2C_HandleTypeDef *hi2c_ptr;
+static ADC_HandleTypeDef *hadc_L_ptr;
+static ADC_HandleTypeDef *hadc_R_ptr;
+static TIM_HandleTypeDef *hic_ptr;
+static Sensors *sensors_ptr;
+
+static float read_mag_angle() {
+	//Calculate angle from X and Y
+	float mag[2];
+	ICM20948_readMagnetometer_XY(hi2c_ptr, mag);
+	for (uint8_t i = 0; i < 2; i++) {
+		mag[i] = lpf(a_mag, magOld[i], mag[i]);
+		magOld[i] = mag[i];
+	}
+	magcal_adjust(mag);
+	return -atan2(mag[1], mag[0]) * 180 / M_PI;
+}
+
+void sensors_init(I2C_HandleTypeDef *i2c_ptr, ADC_HandleTypeDef *adc_L_ptr, ADC_HandleTypeDef *adc_R_ptr, Sensors *sens_ptr) {
+	hi2c_ptr = i2c_ptr;
+	hadc_L_ptr = adc_L_ptr;
+	hadc_R_ptr = adc_R_ptr;
+	sensors_ptr = sens_ptr;
+
+	ICM20948_init(hi2c_ptr, ICM_I2C_ADDR, GYRO_SENS, ACCEL_SENS);
+	ICM20948_readMagnetometer_XY(hi2c_ptr, magOld); //pre-load magOld values.
+
+	//HAL_TIM_IC_Start_IT(ic_ptr, US_IC_CHANNEL);
+	//__HAL_TIM_ENABLE_IT(ic_ptr, TIM_IT_UPDATE);  // also get update (overflow) IRQ for usWrap++
+	//us echo now measured via EXTI on pc12 w tim6
+
+	sens_ptr->gyroZ_bias = 0;
+	sens_ptr->accel_bias[0] = sens_ptr->accel_bias[1] = sens_ptr->accel_bias[2] = 0;
+
+	float mag_angle = read_mag_angle();
+	sens_ptr->heading_bias = mag_angle;
+	angle_init(mag_angle);
+}
+
+void sensors_us_trig(void) {
+    US_TRIG_CLR();
+    delay_us_wait(5);
+    US_TRIG_SET();
+    delay_us_wait(10);
+    US_TRIG_CLR();
+
+    //Arm capture
+    us_arm_for_trig();
+}
+
+void sensors_read_usDist(float pulse_s) {
+    // speed of sound ~34300 cm/s
+    float new_dist = pulse_s * 34300.0f / 2.0f;
+
+    // Expose raw + freshness for telemetry
+    us_raw_cm  = new_dist;
+    us_last_ms = HAL_GetTick();
+
+    // Keep filtered value used by the rest of the system
+    sensors_ptr->usDist = lpf(a_usDist, sensors_ptr->usDist, new_dist);
+}
+
+static float irValueToDist(uint16_t value) {
+	float div = pow(((float) value) / 4095, 1.226);
+	float dist = (div < 6.3028 / DIST_IR_MAX)
+		? DIST_IR_MAX
+		: 6.3028 / div;
+
+	dist -= DIST_IR_OFFSET;
+	if (dist < DIST_IR_MIN) dist = DIST_IR_MIN;
+	return dist;
+}
+
+void sensors_read_irDist() {
+    // Read LEFT
+    HAL_ADC_Start(hadc_L_ptr);
+    if (HAL_ADC_PollForConversion(hadc_L_ptr, HAL_MAX_DELAY) == HAL_OK) {
+        irRaw[0] = (uint16_t)HAL_ADC_GetValue(hadc_L_ptr);
+    }
+    HAL_ADC_Stop(hadc_L_ptr);
+
+    // Read RIGHT
+    HAL_ADC_Start(hadc_R_ptr);
+    if (HAL_ADC_PollForConversion(hadc_R_ptr, HAL_MAX_DELAY) == HAL_OK) {
+        irRaw[1] = (uint16_t)HAL_ADC_GetValue(hadc_R_ptr);
+    }
+    HAL_ADC_Stop(hadc_R_ptr);
+
+    // Convert raw -> cm with your model, then low-pass filter
+    float l_cm = irValueToDist(irRaw[0]);
+    float r_cm = irValueToDist(irRaw[1]);
+
+    static uint8_t seeded = 0;
+    if (!seeded) {
+        sensors_ptr->irDist[0] = l_cm;
+        sensors_ptr->irDist[1] = r_cm;
+        seeded = 1;
+    } else {
+        sensors_ptr->irDist[0] = lpf(a_irDist, sensors_ptr->irDist[0], l_cm);
+        sensors_ptr->irDist[1] = lpf(a_irDist, sensors_ptr->irDist[1], r_cm);
+    }
+}
+
+void sensors_read_gyroZ() {
+	float val;
+	ICM20948_readGyroscope_Z(hi2c_ptr, ICM_I2C_ADDR, GYRO_SENS, &val);
+	sensors_ptr->gyroZ = (val - sensors_ptr->gyroZ_bias) / 1000; //convert to ms
+}
+
+
+void sensors_read_accel() {
+	float accel_new[3];
+	ICM20948_readAccelerometer_all(hi2c_ptr, ICM_I2C_ADDR, ACCEL_SENS, accel_new);
+	for (int i = 0; i < 3; i++) {
+		sensors_ptr->accel[i] = (accel_new[i] - sensors_ptr->accel_bias[i]) * GRAVITY;
+	}
+}
+
+void sensors_read_heading(float msElapsed, float gyroZ) {
+	sensors_ptr->heading = angle_diff_180(
+		angle_get(msElapsed, gyroZ, read_mag_angle()),
+		sensors_ptr->heading_bias
+	);
+}
+
+void sensors_set_bias(uint16_t count) {
+	uint16_t i;
+	uint8_t j;
+	float gyroZTotal = 0, gyroZ = 0,
+		accelTotal[3] = {0}, accel[3];
+//		headingTotal = 0;
+
+	for (i = 0; i < count; i++) {
+		ICM20948_readGyroscope_Z(hi2c_ptr, ICM_I2C_ADDR, GYRO_SENS, &gyroZ); //gyroscope bias
+		gyroZTotal += gyroZ;
+
+		ICM20948_readAccelerometer_all(hi2c_ptr, ICM_I2C_ADDR, ACCEL_SENS, accel); //accelerometer bias
+		for (j = 0; j < 3; j++) accelTotal[j] += accel[j];
+
+//		headingTotal += read_mag_angle(); //heading bias
+	}
+
+	sensors_ptr->gyroZ_bias = gyroZTotal / count;
+
+	for (i = 0; i < 3; i++) sensors_ptr->accel_bias[i] = accelTotal[i] / count;
+	sensors_ptr->accel_bias[2] -= GRAVITY; //normally z accelerometer should read gravity.
+
+//	float heading_bias = headingTotal / count;
+//	sensors_ptr->heading_bias = heading_bias;
+//	angle_reset(heading_bias);
+}
+
+// ---- Debug getters (non-blocking) ----
+void sensors_get_ir_raw(uint16_t *left, uint16_t *right) {
+    if (left)  *left  = irRaw[0];
+    if (right) *right = irRaw[1];
+}
+
+float sensors_get_us_raw_cm(void) {
+    return us_raw_cm;
+}
+
+uint32_t sensors_get_us_age_ms(void) {
+    uint32_t now = HAL_GetTick();
+    return (now >= us_last_ms) ? (now - us_last_ms) : 0;
+}
+
+float sensors_get_ir_cm(uint8_t side) {
+    return sensors_ptr->irDist[side];  // 0 = left, 1 = right
+}
+
+float sensors_get_us_cm(void) {
+    return sensors_ptr->usDist;
+}
+
+float sensors_ir_counts_to_cm(uint16_t value) {
+    float div  = powf((float)value / 4095.0f, 1.226f);
+    float dist = 6.3028f / div;           // model
+    dist -= DIST_IR_OFFSET;               // shift, if you use one
+
+    // proper clamping: MIN ≤ dist ≤ MAX
+    if (dist < DIST_IR_MIN) dist = DIST_IR_MIN;
+    if (dist > DIST_IR_MAX) dist = DIST_IR_MAX;
+    return dist;
+}

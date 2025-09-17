@@ -1,0 +1,2 @@
+../Core/Src/sensor_test.c:17:6:sensors_test_tick	3
+../Core/Src/sensor_test.c:87:10:us_blocking_measure_us	5

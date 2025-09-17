@@ -1,0 +1,36 @@
+#ifndef INC_TIM6_PULSE_CAPT_H_
+#define INC_TIM6_PULSE_CAPT_H_
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include "stm32f4xx_hal.h"   // adjust if using another STM32 family
+#include <stdint.h>
+
+// tim6_pulse_capt.h
+#pragma once
+#include <stdint.h>
+
+void us_pulse_capture_init(void);
+void sensors_us_trig(void);                 // you already have this in sensors.c
+
+extern volatile uint8_t  usCaptureComplete; // 1 when a new pulse is measured
+extern volatile uint16_t usPulse_us;        // pulse width in microseconds
+extern volatile uint32_t lastEchoMs;        // HAL_GetTick() at capture time
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin);
+static uint16_t us_timer_cnt(void);
+
+//getters and setters
+uint8_t us_is_armed(void);
+uint8_t us_edge_pending(void);
+uint32_t us_last_trig_ms(void);
+uint32_t us_last_start_ms(void);
+void us_arm_for_trig(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* INC_TIM6_PULSE_CAPT_H_ */

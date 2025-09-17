@@ -1,0 +1,8 @@
+../Core/Src/tim6_pulse_capt.c:45:6:us_pulse_capture_init	1
+../Core/Src/tim6_pulse_capt.c:57:6:HAL_GPIO_EXTI_Callback	9
+../Core/Src/tim6_pulse_capt.c:102:24:us_timer_cnt	1
+../Core/Src/tim6_pulse_capt.c:107:9:us_is_armed	1
+../Core/Src/tim6_pulse_capt.c:108:9:us_edge_pending	1
+../Core/Src/tim6_pulse_capt.c:109:10:us_last_trig_ms	1
+../Core/Src/tim6_pulse_capt.c:110:10:us_last_start_ms	1
+../Core/Src/tim6_pulse_capt.c:113:6:us_arm_for_trig	1

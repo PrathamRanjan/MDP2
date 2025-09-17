@@ -1,0 +1,42 @@
+#ifndef INC_MOTOR_H_
+#define INC_MOTOR_H_
+
+#include "main.h"
+#include "pid.h"
+#include "convert.h"
+#include "commands.h"
+
+// PWM logical limits (timer ARR can be 7200; keep MAX ≤ ARR)
+#define MOTOR_PWM_MAX   7000
+#define MOTOR_PWM_MIN   100
+#define MOTOR_PWM_ACCEL 50
+#define MOTOR_CORRECTION_PERIOD 10.0f
+#define MS_FRAME 2.0f
+
+#define EPS_F  (1e-6f)
+#define MOTOR_OFFSET_FRAC  (0.40f)
+#define MOTOR_PWM_OFFSET_MAX_PERCENT 0.05f //maximum offset allowed (percentage of target PWM)
+#define MOTOR_BRAKING_DIST_CM_TARGET 15.0f //30.0cm at max speed
+#define MOTOR_BRAKING_DIST_CM_AWAY 20.0f //40.0cm at max speed
+#define L_COUNTS_PER_CM   74.0833f
+
+typedef enum _cmdDistType CmdDistType;
+
+void motor_init(TIM_HandleTypeDef *l_enc, TIM_HandleTypeDef *r_enc);
+float motor_getDist(void);
+void motor_pwmCorrection(float wDiff, float rBack, float distDiff, float brakingDist,
+                         CmdDistType distType, uint8_t speedNext);
+void motor_setDrive(int8_t dir, uint8_t speed);
+
+int16_t clamp_s16(int16_t v, int16_t lo, int16_t hi);
+int16_t apply_deadzone(int16_t v);
+void motor_dist_reset(void);
+void debug_pwm_values(void);
+
+// Optional helpers for tests
+void setDriveDir(int8_t dir);
+void setSpeedDuty(uint16_t dutyA, uint16_t dutyB);
+void brakeMotors(void);
+static inline void coastMotors(void);
+
+#endif
