@@ -264,3 +264,46 @@ def command_generator(states, obstacles):
         compressed_commands.append(commands[i])
 
     return compressed_commands
+
+
+# Converts high-level commands to low-level ASCII protocol commands for RPi
+def to_low_level_commands(commands, default_speed=70):
+    """
+    Converts a list of high-level commands (FW, BW, FR, etc.) to low-level ASCII protocol commands.
+    Args:
+        commands (list): List of high-level command strings
+        default_speed (int): Default speed percentage (0-100)
+    Returns:
+        list: List of low-level ASCII protocol command strings
+    """
+    low_level = []
+    for cmd in commands:
+        if cmd.startswith("FW"):
+            # FW{distance} e.g. FW10 = 10 cm
+            dist = int(cmd[2:])
+            low_level.append(f"T{default_speed}|0|{dist}\n")
+        elif cmd.startswith("BW"):
+            dist = int(cmd[2:])
+            low_level.append(f"t{default_speed}|0|{dist}\n")
+        elif cmd.startswith("FR"):
+            # Forward right 90°
+            low_level.append(f"T{default_speed}|90|0\n")
+        elif cmd.startswith("FL"):
+            # Forward left 90°
+            low_level.append(f"T{default_speed}|-90|0\n")
+        elif cmd.startswith("BR"):
+            # Backward right 90°
+            low_level.append(f"t{default_speed}|90|0\n")
+        elif cmd.startswith("BL"):
+            # Backward left 90°
+            low_level.append(f"t{default_speed}|-90|0\n")
+        elif cmd.startswith("SNAP"):
+            # SNAP commands are not movement, just pass through or use marker
+            low_level.append(f"M\n")
+        elif cmd == "FIN":
+            # Path completion, stop
+            low_level.append(f"S\n")
+        else:
+            # Unknown command, pass as info marker
+            low_level.append(f"M\n")
+    return low_level

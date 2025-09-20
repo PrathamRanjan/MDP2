@@ -3,7 +3,7 @@ from algo.algo import MazeSolver
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from model import *
-from helper import command_generator
+from helper import command_generator, to_low_level_commands
 
 app = Flask(__name__)
 CORS(app)
@@ -49,6 +49,26 @@ def path_finding():
     
     # Based on the shortest path, generate commands for the robot
     commands = command_generator(optimal_path, obstacles)
+    low_level_commands = to_low_level_commands(commands)
+
+    import requests
+
+    ROBOT_SERVER_URL = "http://<rpi-ip>:<port>/receive_command"  # Replace with your RPi's IP and port
+
+    for cmd in low_level_commands:
+        try:
+            response = requests.post(ROBOT_SERVER_URL, json={"command": cmd.strip()})
+            print(f"Sent: {cmd.strip()} | Response: {response.status_code} {response.text}")
+        except Exception as e:
+            print(f"Failed to send command {cmd.strip()}: {e}")
+
+    # Log high-level and low-level commands clearly
+    print("\n=== High-level commands ===")
+    for cmd in commands:
+        print(cmd)
+    print("\n=== Low-level commands ===")
+    for llcmd in low_level_commands:
+        print(llcmd, end='')
 
     # Get the starting location and add it to path_results
     path_results = [optimal_path[0].get_dict()]
