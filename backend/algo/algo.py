@@ -4,7 +4,7 @@ from typing import List
 import numpy as np
 from entities.Robot import Robot
 from entities.Entity import Obstacle, CellState, Grid
-from consts import Direction, MOVE_DIRECTION, TURN_FACTOR, ITERATIONS, TURN_RADIUS, SAFE_COST
+from algo.consts import Direction, MOVE_DIRECTION, TURN_FACTOR, ITERATIONS, TURN_RADIUS, SAFE_COST
 from python_tsp.exact import solve_tsp_dynamic_programming
 
 turn_wrt_big_turns = [[3 * TURN_RADIUS, TURN_RADIUS],

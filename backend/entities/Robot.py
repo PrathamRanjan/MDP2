@@ -1,6 +1,6 @@
 from typing import List
 from entities.Entity import CellState
-from consts import Direction
+from algo.consts import Direction
 
 
 class Robot:

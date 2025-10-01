@@ -1,9 +1,9 @@
 import time
-from algo.algo import MazeSolver 
+from algo.algo import MazeSolver
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from model import *
-from helper import command_generator, to_low_level_commands
+from algo.helper import command_generator, to_low_level_commands
 
 app = Flask(__name__)
 CORS(app)

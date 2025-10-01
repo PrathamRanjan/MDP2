@@ -1,4 +1,4 @@
-from backend.algo.consts import WIDTH, HEIGHT, Direction
+from algo.consts import WIDTH, HEIGHT, Direction
 
 
 def is_valid(center_x: int, center_y: int):
