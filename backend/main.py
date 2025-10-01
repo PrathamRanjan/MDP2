@@ -53,7 +53,7 @@ def path_finding():
 
     import requests
 
-    ROBOT_SERVER_URL = "http://<rpi-ip>:<port>/receive_command"  # Replace with your RPi's IP and port
+    ROBOT_SERVER_URL = "http://192.168.12.12:5000/receive_command"  # Replace with your RPi's IP and port
 
     for cmd in low_level_commands:
         try:
@@ -86,14 +86,18 @@ def path_finding():
         else:
             i += 1
         path_results.append(optimal_path[i].get_dict())
-    return jsonify({
+    response_json = {
         "data": {
             'distance': distance,
             'path': path_results,
-            'commands': commands
+            'commands': low_level_commands
         },
         "error": None
-    })
+    }
+    print("\n=== JSON response to be sent ===")
+    import json
+    print(json.dumps(response_json, indent=2))
+    return jsonify(response_json)
 
 
 @app.route('/image', methods=['POST'])

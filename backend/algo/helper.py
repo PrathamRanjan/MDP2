@@ -290,7 +290,7 @@ def to_low_level_commands(commands, default_speed=60):
             low_level.append(f"T{default_speed}|25|85\n")
         elif cmd.startswith("FL"):
             # Forward left 90° turn: T<speed>|-25|90
-            low_level.append(f"T{default_speed}|-25|85\n")
+            low_level.append(f"T{default_speed}|-25|60\n")
         elif cmd.startswith("BR"):
             # Backward right 90° turn: t<speed>|25|90
             low_level.append(f"t{default_speed}|25|85\n")
