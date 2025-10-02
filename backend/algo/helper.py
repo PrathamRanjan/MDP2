@@ -290,15 +290,23 @@ def to_low_level_commands(commands, default_speed=50):
         elif cmd.startswith("FR"):
             # Forward right 90° turn: T<speed>|25|90
             low_level.append(f"T{default_speed}|25|85\n")
+            low_level.append(f"t{default_speed}|0|15\n")
+            low_level.append(f"T0|0|0\n")
         elif cmd.startswith("FL"):
             # Forward left 90° turn: T<speed>|-25|90
             low_level.append(f"T{default_speed}|-25|60\n")
+            low_level.append(f"t{default_speed}|0|15\n")
+            low_level.append(f"T0|0|0\n")
         elif cmd.startswith("BR"):
             # Backward right 90° turn: t<speed>|25|90
             low_level.append(f"t{default_speed}|25|85\n")
+            low_level.append(f"t{default_speed}|0|15\n")
+            low_level.append(f"T0|0|0\n")
         elif cmd.startswith("BL"):
             # Backward left 90° turn: t<speed>|-25|90
             low_level.append(f"t{default_speed}|-25|85\n")
+            low_level.append(f"t{default_speed}|0|15\n")
+            low_level.append(f"T0|0|0\n")
         elif cmd.startswith("SNAP"):
             # SNAP commands are not movement, just pass through or use marker
             low_level.append(f"T0|0|0\n")
