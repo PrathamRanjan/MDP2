@@ -21,22 +21,29 @@
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintVertical_bias="0.017" />
 
-    <TextView
-        android:id="@+id/chatlog_tv"
+    <ScrollView
+        android:id="@+id/chatlog_scroll"
         android:layout_width="369dp"
         android:layout_height="305dp"
-        android:background="#004146"
-        android:gravity="bottom"
-        android:padding="24dp"
+        android:fillViewport="true"
         android:scrollbars="vertical"
-        android:text=""
-        android:textColor="@color/white"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintHorizontal_bias="0.504"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintVertical_bias="0.254" />
+        app:layout_constraintVertical_bias="0.254">
+
+        <TextView
+            android:id="@+id/chatlog_tv"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#004146"
+            android:gravity="bottom"
+            android:padding="24dp"
+            android:text=""
+            android:textColor="@color/white" />
+    </ScrollView>
 
     <EditText
         android:id="@+id/chatbox_tv"
@@ -52,7 +59,7 @@
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintHorizontal_bias="0.491"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/chatlog_tv"
+        app:layout_constraintTop_toBottomOf="@id/chatlog_scroll"
         app:layout_constraintVertical_bias="0.039" />
 
     <Button
