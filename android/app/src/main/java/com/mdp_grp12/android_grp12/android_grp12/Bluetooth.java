@@ -309,6 +309,8 @@ public class Bluetooth extends AppCompatActivity {
                 IntentFilter discoverDevicesIntent = new IntentFilter(BluetoothDevice.ACTION_FOUND);
                 registerReceiver(scannerWatcher, discoverDevicesIntent);
             }
+            IntentFilter discoverDevicesIntent = new IntentFilter(BluetoothDevice.ACTION_FOUND);
+            registerReceiver(scannerWatcher, discoverDevicesIntent);
             myPairedBTDevices.clear();
             Set<BluetoothDevice> pairedDevices = myBluetoothAdapter.getBondedDevices();
             Log.d(TAG, "toggleButton: Number of paired devices found: " + pairedDevices.size());
