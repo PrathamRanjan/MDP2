@@ -287,28 +287,34 @@ def to_low_level_commands(commands, default_speed=50):
             low_level.append(f"t{default_speed}|0|{dist}\n")
         elif cmd.startswith("FR"):
             # Forward right 90° turn: T<speed>|25|90
-            low_level.append(f"T{default_speed}|25|42\n")
-            low_level.append(f"t{default_speed}|-25|52\n")
+            low_level.append(f"T{default_speed}|25|30\n")
+            low_level.append(f"t{default_speed}|-25|30\n")
+            low_level.append(f"T{default_speed}|25|30\n")
+            low_level.append(f"t50|-25|30\n")
             low_level.append(f"T50|25|21\n")
-            low_level.append(f"T50|0|15\n")
         elif cmd.startswith("FL"):
             # Forward left 90° turn: T<speed>|-25|90
-            low_level.append(f"T{default_speed}|-25|52\n")
-            low_level.append(f"t{default_speed}|25|42\n")
-            low_level.append(f"T50|-25|15\n")
-            low_level.append(f"T50|0|15\n")
+            low_level.append(f"T{default_speed}|-25|30\n")
+            low_level.append(f"t{default_speed}|25|30\n")
+            low_level.append(f"T{default_speed}|-25|30\n")
+            low_level.append(f"t50|25|30\n")
+            low_level.append(f"T50|-25|10\n")
         elif cmd.startswith("BR"):
             # Backward right 90° turn: t<speed>|25|90
-            low_level.append(f"t{default_speed}|25|77\n")
-            low_level.append(f"T{default_speed}|-25|31\n")
-            low_level.append(f"t50|25|28\n")
-            low_level.append(f"t50|0|20\n")
+            low_level.append(f"t{default_speed}|0|10\n")
+            low_level.append(f"t{default_speed}|25|50\n")
+            low_level.append(f"T{default_speed}|-25|30\n")
+            low_level.append(f"t{default_speed}|25|40\n")
+            low_level.append(f"T50|-25|20\n")
+            low_level.append(f"t50|0|25\n")
         elif cmd.startswith("BL"):
             # Backward left 90° turn: t<speed>|-25|90
-            low_level.append(f"t{default_speed}|-25|75\n")
-            low_level.append(f"T{default_speed}|25|35\n")
-            low_level.append(f"t50|-25|25s\n")
-            low_level.append(f"t50|0|20\n")
+            low_level.append(f"t{default_speed}|0|5\n")
+            low_level.append(f"t{default_speed}|-25|50\n")
+            low_level.append(f"T{default_speed}|25|30\n")
+            low_level.append(f"t{default_speed}|-25|40\n")
+            low_level.append(f"T50|25|20\n")
+            low_level.append(f"t50|0|25\n")
         elif cmd.startswith("SNAP"):
             # SNAP commands are not movement, just pass through or use marker
             low_level.append(f"M\n")

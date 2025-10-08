@@ -30,13 +30,13 @@ def path_finding():
 
     # Get the obstacles, big_turn, retrying, robot_x, robot_y, and robot_direction from the json data
     obstacles = content['obstacles']
-    # big_turn = int(content['big_turn'])
+    #big_turn = int(content['big_turn'])
     retrying = content['retrying']
     robot_x, robot_y = content['robot_x'], content['robot_y']
     robot_direction = int(content['robot_dir'])
 
     # Initialize MazeSolver object with robot size of 20x20, bottom left corner of robot at (1,1), facing north, and whether to use a big turn or not.
-    maze_solver = MazeSolver(20, 20, robot_x, robot_y, robot_direction, big_turn=None)
+    maze_solver = MazeSolver(20, 20, robot_x, robot_y, robot_direction, big_turn=None) #tony big and small turn 
 
     # Add each obstacle into the MazeSolver. Each obstacle is defined by its x,y positions, its direction, and its id
     for ob in obstacles:
@@ -46,6 +46,18 @@ def path_finding():
     # Get shortest path
     optimal_path, distance = maze_solver.get_optimal_order_dp(retrying=retrying)
     print(f"Time taken to find shortest path using A* search: {time.time() - start}s")
+    
+    if not optimal_path:
+        error_msg = "No valid path found. This might be due to:"
+        error_msg += "\n1. Obstacles blocking all possible paths"
+        error_msg += "\n2. Some positions unreachable with current turn radius"
+        error_msg += "\n3. Invalid obstacle placement"
+        print(error_msg)
+        return jsonify({
+            "data": None,
+            "error": error_msg
+        })
+
     print(f"Distance to travel: {distance} units")
     
     # Based on the shortest path, generate commands for the robot
