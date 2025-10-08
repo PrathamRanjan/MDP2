@@ -1,4 +1,5 @@
 import time
+import os
 from algo.algo import MazeSolver 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -51,75 +52,23 @@ def path_finding():
     commands = command_generator(optimal_path, obstacles)
     low_level_commands = to_low_level_commands(commands)
 
-    import requests
-    from requests.adapters import HTTPAdapter
-    from urllib3.util.retry import Retry
-
-    # RPi command server configuration
-    ROBOT_SERVER_URL = "http://10.100.110.132:5000/receive_command"  # Replace with your RPi's IP and port
-    SEND_TO_ROBOT = True  # Set to False to disable sending commands to robot
+    # NOTE: Robot command sending is now handled by the RPi communication handler
+    # The RPi script receives the commands via the API response and handles STM32 communication directly
+    SEND_TO_ROBOT = False  # Disable direct robot communication
     
     if SEND_TO_ROBOT:
-        print(f"\n=== Sending commands to robot at {ROBOT_SERVER_URL} ===")
-        
-        # Test connection first
-        try:
-            test_response = requests.get("http://10.100.110.132:5000/status", timeout=5)
-            if test_response.status_code == 200:
-                print("✓ RPi connection test successful")
-            else:
-                print(f"⚠ RPi responded with status {test_response.status_code}")
-        except Exception as e:
-            print(f"✗ RPi connection test failed: {e}")
-            print("  Continuing anyway...")
-        
-        # Configure requests session with retry strategy
-        session = requests.Session()
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        
-        success_count = 0
-        
-        for i, cmd in enumerate(low_level_commands, 1):
-            try:
-                response = session.post(
-                    ROBOT_SERVER_URL, 
-                    json={"command": cmd.strip()}, 
-                    timeout=(5, 10),  # (connect timeout, read timeout)
-                    headers={'Connection': 'close'}  # Don't keep connections alive
-                )
-                print(f"[{i}/{len(low_level_commands)}] Sent: {cmd.strip()} | Response: {response.status_code}")
-                if response.status_code == 200:
-                    success_count += 1
-                else:
-                    print(f"  Warning: Command failed with status {response.status_code}")
-            except requests.exceptions.ConnectionError as e:
-                print(f"[{i}/{len(low_level_commands)}] Failed to send '{cmd.strip()}': Connection error")
-                print(f"  Error details: {str(e)}")
-                print("  Make sure rpi_command_server.py is running on the RPi")
-            except requests.exceptions.Timeout as e:
-                print(f"[{i}/{len(low_level_commands)}] Failed to send '{cmd.strip()}': Timeout")
-                print(f"  Error details: {str(e)}")
-            except Exception as e:
-                print(f"[{i}/{len(low_level_commands)}] Failed to send '{cmd.strip()}': {type(e).__name__}")
-                print(f"  Error details: {str(e)}")
-        
-        session.close()
-        print(f"Commands sent successfully: {success_count}/{len(low_level_commands)}")
+        print("Direct robot command sending is disabled - using RPi communication handler instead")
     else:
         print("\n=== Robot command sending is disabled ===")
-        print("Set SEND_TO_ROBOT = True to enable sending commands to robot")
+        print("Commands will be returned to RPi communication handler")
 
     # Log high-level and low-level commands clearly
     print("\n=== High-level commands ===")
     for cmd in commands:
         print(cmd)
+    print("\n=== Low-level commands ===")
+    for llcmd in low_level_commands:
+        print(llcmd, end='')
     print("\n=== Low-level commands ===")
     for llcmd in low_level_commands:
         print(llcmd, end='')
@@ -144,10 +93,12 @@ def path_finding():
         "data": {
             'distance': distance,
             'path': path_results,
-            'commands': commands
+            'commands': commands,
+            'low_level_commands': low_level_commands
         },
         "error": None
     })
+
 
 
 @app.route('/image', methods=['POST'])

@@ -55,19 +55,7 @@ export default function Simulator() {
   const [page, setPage] = useState(0);
 
   const generateNewID = () => {
-    while (true) {
-      let new_id = Math.floor(Math.random() * 10) + 1; // just try to generate an id;
-      let ok = true;
-      for (const ob of obstacles) {
-        if (ob.id === new_id) {
-          ok = false;
-          break;
-        }
-      }
-      if (ok) {
-        return new_id;
-      }
-    }
+    return obstacles.length;
   };
 
   const generateRobotCells = () => {

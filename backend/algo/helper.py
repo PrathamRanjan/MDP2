@@ -281,35 +281,34 @@ def to_low_level_commands(commands, default_speed=50):
         if cmd.startswith("FW"):
             # FW{distance} e.g. FW10 = 10 cm
             dist = int(cmd[2:])
-            dist = dist - 5
             low_level.append(f"T{default_speed}|0|{dist}\n")
         elif cmd.startswith("BW"):
             dist = int(cmd[2:])
-            dist = dist - 5
             low_level.append(f"t{default_speed}|0|{dist}\n")
         elif cmd.startswith("FR"):
             # Forward right 90° turn: T<speed>|25|90
-            low_level.append(f"T{default_speed}|25|85\n")
-            low_level.append(f"t{default_speed}|0|15\n")
-            low_level.append(f"T0|0|0\n")
+            low_level.append(f"T{default_speed}|25|42\n")
+            low_level.append(f"t{default_speed}|-25|52\n")
+            low_level.append(f"T50|25|21\n")
+            low_level.append(f"T50|0|15\n")
         elif cmd.startswith("FL"):
             # Forward left 90° turn: T<speed>|-25|90
-            low_level.append(f"T{default_speed}|-25|60\n")
-            low_level.append(f"t{default_speed}|0|15\n")
-            low_level.append(f"T0|0|0\n")
+            low_level.append(f"T{default_speed}|-25|42\n")
+            low_level.append(f"t{default_speed}|25|52\n")
+            low_level.append(f"T50|-25|15\n")
+            low_level.append(f"T50|0|20\n")
         elif cmd.startswith("BR"):
             # Backward right 90° turn: t<speed>|25|90
-            low_level.append(f"t{default_speed}|25|85\n")
-            low_level.append(f"t{default_speed}|0|15\n")
-            low_level.append(f"T0|0|0\n")
+            low_level.append(f"t{default_speed}|25|60\n")
+            low_level.append(f"T{default_speed}|-25|50\n")
+            low_level.append(f"t50|0|20\n")
         elif cmd.startswith("BL"):
             # Backward left 90° turn: t<speed>|-25|90
-            low_level.append(f"t{default_speed}|-25|85\n")
-            low_level.append(f"t{default_speed}|0|15\n")
-            low_level.append(f"T0|0|0\n")
+            low_level.append(f"t{default_speed}|-25|50\n")
+            low_level.append(f"T{default_speed}|25|60\n")
+            low_level.append(f"t50|0|20\n")
         elif cmd.startswith("SNAP"):
             # SNAP commands are not movement, just pass through or use marker
-            low_level.append(f"T0|0|0\n")
             low_level.append(f"M\n")
         elif cmd == "FIN":
             # Path completion, stop
