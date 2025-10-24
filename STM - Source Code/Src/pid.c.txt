@@ -1,0 +1,28 @@
+#include "pid.h"
+
+void pid_reset(PidDef *d) {
+    d->errorArea = 0.0f;
+    d->errorOld  = 0.0f;
+    d->dPrev     = 0.0f;
+}
+
+void pid_init(PidDef *d, float Kp, float Ki, float Kd) {
+    pid_reset(d);
+    d->Kp = Kp; d->Ki = Ki; d->Kd = Kd;
+    d->iMin = -1e6f; d->iMax = 1e6f;
+    d->dAlpha = 1.0f;
+}
+
+float pid_adjust(PidDef *d, float error, float dt) {
+    if (dt <= 0.0f) dt = 1.0f;
+
+    d->errorArea += error * dt;
+    if (d->errorArea > d->iMax) d->errorArea = d->iMax;
+    if (d->errorArea < d->iMin) d->errorArea = d->iMin;
+
+    float deriv = (error - d->errorOld) / dt;
+    d->dPrev = d->dPrev + d->dAlpha * (deriv - d->dPrev);
+
+    d->errorOld = error;
+    return d->Kp*error + d->Ki*d->errorArea + d->Kd*d->dPrev;
+}

@@ -1,0 +1,105 @@
+#include "main.h"   // for huart3
+#include <stdio.h>
+#include <string.h>
+#include "sensors.h"
+#include "tim6_pulse_capt.h"
+
+extern UART_HandleTypeDef huart3;
+extern TIM_HandleTypeDef htim6;
+
+// Tuning
+static const uint32_t PING_PERIOD_MS = 60;
+static const uint32_t IR_PRINT_MS    = 200;
+
+static uint32_t lastPingMs = 0;
+static uint32_t lastIrMs   = 0;
+
+void sensors_test_tick(void)
+{
+    uint32_t now = HAL_GetTick();
+    char msg[160];
+    int len;
+
+    // 1) Ping ultrasonic every ~60 ms
+    if ((now - lastPingMs) >= PING_PERIOD_MS) {
+        lastPingMs = now;
+        sensors_us_trig();  // 10us pulse to TRIG
+    }
+
+    // 2) If EXTI captured a fresh pulse, print ultrasonic (atomic snapshot)
+    {
+        uint8_t  captured;
+        uint32_t pulse_us_snapshot;
+
+        __disable_irq();
+        captured = usCaptureComplete;
+        if (captured) {
+            pulse_us_snapshot = usPulse_us;
+            usCaptureComplete = 0;   // consume
+        }
+        __enable_irq();
+
+        if (captured) {
+            float    raw_cm  = sensors_get_us_raw_cm();
+            uint32_t age_ms  = sensors_get_us_age_ms();
+            float    filt_cm = sensors_get_us_cm();   // ensure this getter exists
+
+            len = snprintf(msg, sizeof(msg),
+                           "US | pulse=%lu us | raw=%.1f cm | age=%lums | filt=%.1f cm\r\n",
+                           (unsigned long)pulse_us_snapshot,
+                           raw_cm,
+                           (unsigned long)age_ms,
+                           filt_cm);
+            if (len > 0) {
+                HAL_UART_Transmit(&huart3, (uint8_t*)msg, (uint16_t)len, HAL_MAX_DELAY);
+            }
+        }
+    }
+
+    // 3) Read + print IR every 200 ms
+    if ((now - lastIrMs) >= IR_PRINT_MS) {
+        lastIrMs = now;
+
+        sensors_read_irDist();
+        uint16_t l_raw = 0, r_raw = 0;
+        sensors_get_ir_raw(&l_raw, &r_raw);
+
+        float l_cm_raw = sensors_ir_counts_to_cm(l_raw);
+        float r_cm_raw = sensors_ir_counts_to_cm(r_raw);
+
+        len = snprintf(msg, sizeof(msg),
+                       "IR | Lraw=%.1fcm Rraw=%.1fcm | Lf=%.1fcm Rf=%.1fcm\r\n",
+                       l_cm_raw, r_cm_raw,
+                       sensors_get_ir_cm(0), sensors_get_ir_cm(1));
+
+//        len = snprintf(msg, sizeof(msg),"IR | Lraw=%u Rraw=%u\r\n",l_raw, r_raw);
+
+
+        if (len > 0) {
+            HAL_UART_Transmit(&huart3, (uint8_t*)msg, (uint16_t)len, HAL_MAX_DELAY);
+        }
+    }
+}
+
+uint32_t us_blocking_measure_us(uint32_t wait_rise_ms, uint32_t wait_fall_ms) {
+    // 1) send TRIG
+    sensors_us_trig();
+
+    // 2) wait for rising edge (echo high)
+    uint32_t t0 = HAL_GetTick();
+    while (HAL_GetTick() - t0 < wait_rise_ms) {
+        if (HAL_GPIO_ReadPin(US_DATA_GPIO_Port, US_DATA_Pin) == GPIO_PIN_SET) {
+            uint16_t start = __HAL_TIM_GET_COUNTER(&htim6);
+            // 3) wait for falling edge
+            uint32_t t1 = HAL_GetTick();
+            while (HAL_GetTick() - t1 < wait_fall_ms) {
+                if (HAL_GPIO_ReadPin(US_DATA_GPIO_Port, US_DATA_Pin) == GPIO_PIN_RESET) {
+                    uint16_t end = __HAL_TIM_GET_COUNTER(&htim6);
+                    return (uint16_t)(end - start); // wrap-safe
+                }
+            }
+            return 0; // fell timeout
+        }
+    }
+    return 0; // rise timeout
+}
