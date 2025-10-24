@@ -1,4 +1,0 @@
-../Core/Src/ICM20948_SelfTest.c:16:13:_uart_puts	16	static
-../Core/Src/ICM20948_SelfTest.c:25:25:ICM20948_SelfTest	112	static
-../Core/Src/ICM20948_SelfTest.c:48:6:ICM20948_DebugPrintAccelGyro	280	static
-../Core/Src/ICM20948_SelfTest.c:85:25:ICM20948_FindBias	312	static

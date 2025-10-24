@@ -1,3 +1,0 @@
-../Core/Src/servo.c:21:6:servo_init	16	static
-../Core/Src/servo.c:26:6:servo_setVal	16	static
-../Core/Src/servo.c:30:6:servo_setAngle	48	static
