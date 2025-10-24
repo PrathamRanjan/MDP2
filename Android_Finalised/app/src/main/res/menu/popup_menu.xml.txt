@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/loadoption"
+        android:title="Load" />
+    <item
+        android:id="@+id/option1"
+        android:title="Preset 1" />
+    <item
+        android:id="@+id/option2"
+        android:title="Preset 2" />
+    <item
+        android:id="@+id/option3"
+        android:title="Preset 3" />
+    <item
+        android:id="@+id/option4"
+        android:title="Preset 4" />
+    <item
+        android:id="@+id/option5"
+        android:title="Preset 5" />
+    <item
+        android:id="@+id/saveoption"
+        android:title="Save" />
+    <!-- Add more menu items as needed -->
+</menu>
