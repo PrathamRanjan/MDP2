@@ -204,7 +204,7 @@ export default function Simulator() {
     setIsComputing(true);
     // Call the query function from the API
     QueryAPI.query(obstacles, robotX, robotY, robotDir, (data, err) => {
-      if (data) {
+      if (data && data.data) {
         // If the data is valid, set the path
         setPath(data.data.path);
         // Set the commands
@@ -217,6 +217,10 @@ export default function Simulator() {
           commands.push(x);
         }
         setCommands(commands);
+      } else {
+        // Handle the error or set defaults
+        setPath([]);
+        setCommands([]);
       }
       // Set computing to false, release the lock
       setIsComputing(false);
