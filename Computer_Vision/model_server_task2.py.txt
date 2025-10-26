@@ -1,0 +1,265 @@
+import socket
+import cv2
+import numpy as np
+import struct
+import datetime
+import os
+import json
+import detector_task2
+import subprocess
+import sys
+import glob
+
+HOST = "0.0.0.0"
+PORT = 8002  # Different port for Task 2 server
+
+def run_stitch_and_display():
+    """
+    Run Task 2 specific stitcher and display the resulting image in fullscreen
+    """
+    print("\n" + "="*50)
+    print("[TASK2 SERVER] Running Task 2 stitcher...")
+    print("="*50)
+    
+    try:
+        # Run task2-specific stitcher
+        result = subprocess.run([sys.executable, "simple_stitch_task2.py"], 
+                              capture_output=True, text=True, cwd=os.getcwd())
+        
+        if result.returncode == 0:
+            print("[TASK2 SERVER] Task 2 stitcher completed successfully!")
+            print(result.stdout)
+            
+            # Find the most recent Task 2 stitched image
+            stitched_files = glob.glob("detection_results/task2/stitched_outputs/task2_detections_*.png")
+            if stitched_files:
+                # Get the most recent file
+                latest_stitched = max(stitched_files, key=os.path.getctime)
+                print(f"[TASK2 SERVER] Found Task 2 stitched image: {latest_stitched}")
+                
+                # Display the image in fullscreen
+                display_fullscreen_image(latest_stitched)
+            else:
+                print("[TASK2 SERVER] No Task 2 stitched images found!")
+        else:
+            print(f"[TASK2 SERVER] Task 2 stitcher failed with error code {result.returncode}")
+            print("STDOUT:", result.stdout)
+            print("STDERR:", result.stderr)
+            
+    except Exception as e:
+        print(f"[TASK2 SERVER] Error running Task 2 stitcher: {e}")
+
+def display_fullscreen_image(image_path):
+    """
+    Display an image in fullscreen mode
+    """
+    try:
+        print(f"[TASK2 SERVER] Displaying image in fullscreen: {os.path.basename(image_path)}")
+        
+        # Load the image
+        image = cv2.imread(image_path)
+        if image is None:
+            print(f"[TASK2 SERVER] Failed to load image: {image_path}")
+            return
+            
+        # Get screen resolution (approximate for fullscreen)
+        screen_width = 1920  # Default, will be adjusted by OpenCV
+        screen_height = 1080
+        
+        # Create a named window and set it to fullscreen
+        window_name = "Task 2 Detection Results - Press ESC to close"
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        
+        # Display the image
+        cv2.imshow(window_name, image)
+        
+        print("[TASK2 SERVER] Image displayed in fullscreen. Press ESC or 'q' to close.")
+        print("[TASK2 SERVER] Press any other key to continue...")
+        
+        # Wait for key press
+        while True:
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27 or key == ord('q'):  # ESC key or 'q'
+                break
+                
+        cv2.destroyAllWindows()
+        print("[TASK2 SERVER] Image display closed.")
+        
+    except Exception as e:
+        print(f"[TASK2 SERVER] Error displaying image: {e}")
+        # Try to display anyway without fullscreen
+        try:
+            cv2.imshow("Task 2 Detection Results", image)
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+        except:
+            print("[TASK2 SERVER] Could not display image at all")
+
+def format_task2_result(detected_text, confidence):
+    """
+    Format Task 2 detection results for Android client
+    Task 2 expects: "left", "right", "bullseye", or "NA"
+    """
+    # Task 2 symbols don't need ID formatting like Task 1
+    # Just return the detected symbol directly
+    if detected_text in ["left", "right", "bullseye"]:
+        return detected_text
+    else:
+        return "NA"
+
+def main():
+    # Warmup model BEFORE accepting connections
+    print("[TASK2 SERVER] Pre-loading and warming up model...")
+    try:
+        # Force model load and warmup by calling detector once with dummy image
+        import numpy as np
+        dummy_frame = np.zeros((640, 640, 3), dtype=np.uint8)
+        cv2.rectangle(dummy_frame, (200, 200), (400, 400), (255, 255, 255), -1)
+        # This will trigger _load_model() which includes warmup
+        _, _ = detector_task2.detect_symbol(dummy_frame, save_debug=False)
+        print("[TASK2 SERVER] Model pre-loaded and warmed up! Ready for fast detections.")
+    except Exception as e:
+        print(f"[TASK2 SERVER] Warning: Model warmup failed: {e}")
+    
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Allow port reuse
+    server.bind((HOST, PORT))
+    server.listen(1)
+    print(f"[TASK2 SERVER] Task 2 Model Server listening on {HOST}:{PORT}")
+    print("[TASK2 SERVER] Detecting: left arrows, right arrows, and bullseye symbols")
+
+    conn = None
+    try:
+        conn, addr = server.accept()
+        print(f"[TASK2 SERVER] Connected by {addr}")
+
+        data = b""
+        payload_size = 4  # match client '>I'
+        while True:
+            # Receive length header
+            while len(data) < payload_size:
+                packet = conn.recv(4096)
+                if not packet:
+                    print("[TASK2 SERVER] Connection closed by client")
+                    return
+                data += packet
+                
+            packed_msg_size = data[:payload_size]
+            data = data[payload_size:]
+            msg_size = struct.unpack('>I', packed_msg_size)[0]
+
+            # Receive frame
+            while len(data) < msg_size:
+                packet = conn.recv(4096)
+                if not packet:
+                    print("[TASK2 SERVER] Connection closed by client")
+                    return
+                data += packet
+                
+            frame_data = data[:msg_size]
+            data = data[msg_size:]
+
+            # Decode image
+            frame = cv2.imdecode(np.frombuffer(frame_data, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if frame is None:
+                print("[TASK2 SERVER] Failed to decode frame")
+                continue
+            print(f"[TASK2 SERVER] Received frame {frame.shape}")
+
+            # Save detected images for verification
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+
+            # Create detection_results folder structure for Task 2
+            os.makedirs("detection_results/task2/raw_detections", exist_ok=True)
+            os.makedirs("detection_results/task2/annotated_images", exist_ok=True)
+            os.makedirs("detection_results/task2/debug_frames", exist_ok=True)
+            os.makedirs("detection_results/task2/stitched_outputs", exist_ok=True)
+
+            # Run detector_task2 to detect symbols and get annotated frame
+            detected_text, confidence, annotated_frame = detector_task2.detect_symbol_with_annotation(frame, save_debug=True)
+            print(f"[TASK2 SERVER] Detected: {detected_text} (confidence: {confidence:.3f})")
+
+            # Format result for Task 2
+            formatted_result = format_task2_result(detected_text, confidence)
+            print(f"[TASK2 SERVER] Formatted result: {formatted_result}")
+
+            # --- USE THE ANNOTATED FRAME FROM DETECTOR ---
+            # The annotated_frame from detector already has bounding boxes and labels
+            display_frame = annotated_frame.copy()
+            
+            # Add summary text at the top
+            if detected_text != "NA":
+                summary_text = f"Task 2 - Detected: {detected_text} (conf: {confidence:.2f})"
+                text_color = (0, 255, 0)  # Green for successful detection
+            else:
+                summary_text = f"Task 2 - No symbol detected (conf: {confidence:.2f})"
+                text_color = (0, 0, 255)  # Red for failed detection
+            
+            cv2.putText(display_frame, summary_text, (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, text_color, 2, cv2.LINE_AA)
+            
+            # Add timestamp
+            time_text = f"Time: {timestamp}"
+            cv2.putText(display_frame, time_text, (10, 60), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+            
+            # Save to task2/raw_detections (ALL images go here)
+            raw_filename = f"detection_results/task2/raw_detections/detection_{detected_text}_{timestamp}.jpg"
+            cv2.imwrite(raw_filename, display_frame)
+            print(f"[TASK2 SERVER] Saved to task2/raw_detections: {raw_filename}")
+            
+            # Conditional saving based on detection result
+            if detected_text != "NA":
+                # Successful detection -> save to task2/annotated_images
+                annotated_filename = f"detection_results/task2/annotated_images/annotated_{detected_text}_{timestamp}.jpg"
+                cv2.imwrite(annotated_filename, display_frame)
+                print(f"[TASK2 SERVER] Saved successful detection: {annotated_filename}")
+                
+                # Save confidence data as JSON
+                confidence_data = {
+                    "task": "task2",
+                    "symbol": detected_text,
+                    "confidence": confidence,
+                    "timestamp": timestamp,
+                    "image_file": annotated_filename,
+                    "symbol_types": ["left", "right", "bullseye"],
+                    "formatted_result": formatted_result
+                }
+                json_filename = f"detection_results/task2/annotated_images/annotated_{detected_text}_{timestamp}.json"
+                with open(json_filename, 'w') as f:
+                    json.dump(confidence_data, f, indent=2)
+                print(f"[TASK2 SERVER] Saved confidence data: {json_filename}")
+            else:
+                # Failed detection (NA) -> save original frame to debug_frames
+                debug_filename = f"detection_results/task2/debug_frames/debug_NA_{timestamp}.jpg"
+                cv2.imwrite(debug_filename, frame)  # Save original frame, not annotated
+                print(f"[TASK2 SERVER] Saved failed detection to debug: {debug_filename}")
+            
+            # Always save original frame for debugging purposes
+            debug_original = f"detection_results/task2/debug_frames/original_{timestamp}.jpg"
+            cv2.imwrite(debug_original, frame)
+            print(f"[TASK2 SERVER] Saved original frame: {debug_original}")
+
+            # Send formatted result back to client
+            resp_bytes = formatted_result.encode('utf-8')
+            conn.sendall(struct.pack('>I', len(resp_bytes)) + resp_bytes)
+
+    except KeyboardInterrupt:
+        print("\n[TASK2 SERVER] Server interrupted by user")
+    except Exception as e:
+        print(f"[TASK2 SERVER] Server error: {e}")
+    finally:
+        if conn:
+            conn.close()
+        server.close()
+        print("[TASK2 SERVER] Server closed")
+        
+        # Run simple_stitch.py and display the result when server stops
+        run_stitch_and_display()
+
+if __name__ == "__main__":
+    print("[TASK2 SERVER] Starting Task 2 Model Server...")
+    print("[TASK2 SERVER] Task 2 detects: left arrows, right arrows, bullseye symbols")
+    print("[TASK2 SERVER] Using detector_task2.py with split server architecture")
+    main()
