@@ -1,0 +1,908 @@
+#!/usr/bin/env python3
+"""
+Task 2 - Fastest Car Challenge Handler (Standalone)
+Handles autonomous navigation with real-time arrow/bullseye detection
+
+NEW FLOW:
+1. Send "W50|0|30\n" to STM32
+2. Wait for "fS" response
+3. Snap picture and get detection (LEFT/RIGHT/BULLSEYE)
+4. Based on detection, send appropriate command set
+5. Wait for "fS" after each command in the set
+6. Repeat for second obstacle
+
+Features:
+- Detects LEFT/RIGHT arrows and BULLSEYE symbols
+- Sends movement commands to STM32 based on detections
+- Provides live video feed with detection visualization
+- Automatically stops when bullseye is detected
+"""
+
+import serial
+import time
+import json
+import threading
+import logging
+import configparser
+import os
+import socket
+import struct
+import select
+from typing import Dict, List, Optional
+
+# Try to import computer vision libraries
+try:
+    import cv2
+    import numpy as np
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
+    print("WARNING: OpenCV not available. Live feed will be disabled.")
+
+# Try to import Pi camera modules
+try:
+    from picamera import PiCamera
+    from picamera.array import PiRGBArray
+    PI_CAMERA_AVAILABLE = True
+except ImportError:
+    PI_CAMERA_AVAILABLE = False
+    print("INFO: Pi Camera not available. Using webcam fallback.")
+
+# Import vision client from existing MDP system
+try:
+    from client import VisionClient
+    VISION_CLIENT_AVAILABLE = True
+except ImportError:
+    VISION_CLIENT_AVAILABLE = False
+    print("ERROR: Vision client not available. Task 2 cannot function without vision system!")
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,  # Changed to DEBUG for troubleshooting
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(name)
+
+class Task2Handler:
+    def init(self, config_file='config.ini'):
+        """Initialize Task 2 handler"""
+        self.config = configparser.ConfigParser()
+        config_path = os.path.join(os.path.dirname(file), config_file)
+        self.config.read(config_path)
+        
+        # STM32 Serial Connection
+        try:
+            self.stm32_port = self.config.get('stm32', 'port')
+        except:
+            # Default for Windows (adjust as needed)
+            self.stm32_port = 'COM3'  # Change this to your actual STM32 port
+        
+        try:
+            self.stm32_baudrate = self.config.getint('stm32', 'baudrate')
+        except:
+            self.stm32_baudrate = 115200
+        
+        self.stm32_serial = None
+        
+        # Vision Server Connection (optional)
+        try:
+            self.vision_host = self.config.get('vision', 'host')
+        except:
+            self.vision_host = '192.168.12.31'
+        
+        try:
+            self.vision_port = self.config.getint('vision', 'port')
+        except:
+            self.vision_port = 8002
+        
+        # Task 2 State
+        self.task2_active = False
+        self.current_detection = None
+        self.obstacles_completed = 0
+        self.total_obstacles = 2
+        self.mission_complete_flag = False  # Flag to signal complete shutdown
+        
+        # Vision client (same as MDP communication handler)
+        self.vision_client = None
+        self.vision_enabled = False
+        
+        # Bluetooth Communication (Android device already connected)
+        self.bluetooth_device = '/dev/rfcomm0'
+        self.bluetooth_conn = None
+        self.bluetooth_enabled = True
+
+
+        
+    def initialize(self):
+        """Initialize connections"""
+        logger.info("Initializing Task 2 Handler...")
+        
+        # Initialize STM32
+        self._init_stm32()
+        
+        # Initialize vision system (same as MDP handler)
+        self._init_vision_system()
+
+    logger.info("Task 2 Handler initialized")
+            
+    def _init_stm32(self):
+        """Initialize STM32 connection"""
+        try:
+            logger.info("Connecting to STM32 on port {}...".format(self.stm32_port))
+            self.stm32_serial = serial.Serial(
+                self.stm32_port,
+                self.stm32_baudrate,
+                timeout=1
+            )
+            time.sleep(2)
+            logger.info("STM32 connected successfully")
+        except Exception as e:
+            logger.error("Failed to connect to STM32: {}".format(e))
+            logger.info("You may need to update the COM port in the config or code")
+            
+    def _init_vision_system(self):
+        """Initialize vision system for arrow/bullseye detection (same as MDP handler)"""
+        try:
+            if VISION_CLIENT_AVAILABLE:
+                logger.info("Initializing Task 2 vision system...")
+                self.vision_client = VisionClient(
+                    server_ip=self.vision_host,
+                    server_port=self.vision_port,
+                    callback=self._on_symbol_detected
+                )
+                
+                # Vision client is available (connection will be tested when detection starts)
+                self.vision_enabled = True
+                logger.info("Task 2 vision system available")
+            else:
+                logger.error("Vision client not available - Task 2 cannot function without vision!")
+                
+        except Exception as e:
+            logger.error("Failed to initialize Task 2 vision system: {}".format(e))
+            logger.error("Task 2 requires vision system to function!")
+    
+    
+    def _on_symbol_detected(self, symbol: str):
+        """Callback when a symbol is detected by vision system"""
+        logger.info("Symbol detected by vision: {}".format(symbol))
+        
+        # Update current detection for live feed display
+        self.current_detection = symbol.upper()
+        
+        # Print detection as requested
+        if "LEFT" in symbol.upper():
+            print("DETECTED LEFT")
+        elif "RIGHT" in symbol.upper():
+            print("DETECTED RIGHT")  
+        elif "BULL" in symbol.upper() or "TARGET" in symbol.upper():
+            print("DETECTED BULLSEYE")
+            
+    def start_task2_mission(self):
+        """Start Task 2 Mission"""
+        logger.info("=" * 50)
+        logger.info("STARTING TASK 2 - FASTEST CAR CHALLENGE")
+        logger.info("=" * 50)
+        
+        if not self.stm32_serial:
+            logger.error("STM32 not connected! Cannot start mission.")
+            return False
+        
+        if not self.vision_enabled or not self.vision_client:
+            logger.error("Vision system not available! Cannot start Task 2 mission.")
+            logger.error("Task 2 requires working vision detection system.")
+            return False
+            
+        self.task2_active = True
+        self.obstacles_completed = 0
+        
+        # Start mission logic
+        mission_thread = threading.Thread(target=self._run_mission, daemon=True)
+        mission_thread.start()
+        
+        return True
+        
+    def _run_live_feed(self):
+        """Run live camera feed with detection overlay"""
+        if not CV2_AVAILABLE:
+            return
+            
+        logger.info("Starting live feed...")
+        self.live_feed_active = True
+        
+        # Try to open camera
+        cap = None
+        if PI_CAMERA_AVAILABLE and self.camera:
+            logger.info("Using Pi Camera for live feed")
+        else:
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                logger.error("No camera available for live feed")
+                return
+            logger.info("Using webcam for live feed")
+        
+        try:
+            while self.live_feed_active and self.task2_active:
+                frame = None
+                
+                # Capture frame
+                if PI_CAMERA_AVAILABLE and self.camera:
+                    try:
+                        rawCapture = PiRGBArray(self.camera, size=(640, 480))
+                        self.camera.capture(rawCapture, format="bgr", use_video_port=True)
+                        frame = rawCapture.array
+                        rawCapture.truncate(0)
+                    except:
+                        pass
+                elif cap:
+                    ret, frame = cap.read()
+                    if not ret:
+                        continue
+                
+                if frame is not None:
+                    # Add overlay
+                    display_frame = self._add_overlay(frame)
+                    
+                    # Display
+                    cv2.imshow('Task 2 - Fastest Car Live Feed', display_frame)
+                    
+                    # Check for exit
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
+                
+                time.sleep(0.1)
+                
+        except Exception as e:
+            logger.error("Live feed error: {}".format(e))
+        finally:
+            self.live_feed_active = False
+            if cap:
+                cap.release()
+            cv2.destroyAllWindows()
+            
+    def _add_overlay(self, frame):
+        """Add detection overlay to frame"""
+        if not CV2_AVAILABLE:
+            return frame
+            
+        display_frame = frame.copy()
+        
+        # Title
+        cv2.putText(display_frame, "TASK 2 - FASTEST CAR", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        
+        # Current detection
+        if self.current_detection:
+            text = "DETECTED: {}".format(self.current_detection)
+            color = (0, 0, 255) if self.current_detection == "BULLSEYE" else (255, 0, 0)
+            cv2.putText(display_frame, text, (10, 70), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+        
+        # Progress
+        progress = "Obstacles: {}/{}".format(self.obstacles_completed, self.total_obstacles)
+        cv2.putText(display_frame, progress, (10, 110), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        
+        # Detection box
+        if self.current_detection and self.current_detection != "NO_DETECTION":
+            h, w = display_frame.shape[:2]
+            center_x, center_y = w//2, h//2
+            cv2.rectangle(display_frame, (center_x-60, center_y-40), 
+                         (center_x+60, center_y+40), (0, 255, 255), 3)
+            cv2.putText(display_frame, self.current_detection, (center_x-50, center_y-50), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        
+        return display_frame
+        
+    def _run_mission(self):
+        """Main mission logic with new obstacle flow"""
+        try:
+            logger.info("Starting Task 2 navigation sequence...")
+            # --- 1st Obstacle ---
+            logger.info("Phase 1: Detecting 1st obstacle...")
+            self._send_status_to_android("Moving to Obstacle 1...")
+            self._send_stm32_command("W50|0|40\n")
+            self._send_stm32_command("M\n")
+            if self._wait_for_stm32_response():
+                self._send_status_to_android("Detecting Obstacle 1...")
+                detection1 = self._detect_symbol()
+                if detection1 == "LEFT":
+                    logger.info("Running 1st LEFT sequence...")
+                    self._send_status_to_android("Obstacle 1: LEFT detected")
+                    self._run_command_sequence(self._get_1st_left_commands())
+                elif detection1 == "RIGHT":
+                    logger.info("Running 1st RIGHT sequence...")
+                    self._send_status_to_android("Obstacle 1: RIGHT detected")
+                    self._run_command_sequence(self._get_1st_right_commands())
+                elif detection1 == "BULLSEYE":
+                    print("DETECTED BULLSEYE")  # Just print and continue
+                    logger.info("Bullseye detected - continuing mission")
+                    self._send_status_to_android("Obstacle 1: BULLSEYE detected")
+                else:
+                    logger.error("No valid detection for 1st obstacle!")
+                    self._send_status_to_android("Obstacle 1: Detection failed")
+                    self._emergency_stop()
+                    return
+                self.obstacles_completed += 1
+                self._send_status_to_android("Obstacle 1: Completed")
+
+            # --- 2nd Obstacle ---
+            logger.info("Phase 2: Detecting 2nd obstacle...")
+            self._send_status_to_android("Moving to Obstacle 2...")
+            self._send_stm32_command("W50|0|20\n")
+            self._send_stm32_command("t50|0|25\n")
+            self._send_stm32_command("M\n")
+            if self._wait_for_stm32_response():
+                self._send_status_to_android("Detecting Obstacle 2...")
+                detection2 = self._detect_symbol()
+                if detection2 == "LEFT":
+                    logger.info("Running 2nd LEFT sequence...")
+                    self._send_status_to_android("Obstacle 2: LEFT detected")
+                    self._run_command_sequence(self._get_2nd_left_commands())
+                elif detection2 == "RIGHT":
+                    logger.info("Running 2nd RIGHT sequence...")
+                    self._send_status_to_android("Obstacle 2: RIGHT detected")
+                    self._run_command_sequence(self._get_2nd_right_commands())
+                elif detection2 == "BULLSEYE":
+                    print("DETECTED BULLSEYE")  # Just print and continue
+                    logger.info("Bullseye detected - continuing mission")
+                    self._send_status_to_android("Obstacle 2: BULLSEYE detected")
+                else:
+                    logger.error("No valid detection for 2nd obstacle!")
+                    self._send_status_to_android("Obstacle 2: Detection failed")
+                    self._emergency_stop()
+                    return
+                self.obstacles_completed += 1
+                self._send_status_to_android("Obstacle 2: Completed")
+
+            # Mission complete
+            self._mission_complete()
+            self._send_status_to_android("Task 2 Completed!")
+        except Exception as e:
+            logger.error("Mission error: {}".format(e))
+            self._send_status_to_android("Mission Error: {}".format(str(e)))
+            self._emergency_stop()
+            
+    def _handle_obstacle(self, obstacle_num: int) -> bool:
+        """Handle obstacle detection and navigation"""
+        logger.info("Handling obstacle {}...".format(obstacle_num))
+        
+        # Snap picture and perform detection
+        detection = self._detect_symbol()
+        
+        if detection == "LEFT":
+            print("DETECTED LEFT")
+            logger.info("LEFT arrow detected on obstacle {}".format(obstacle_num))
+            self.current_detection = "LEFT"
+            return self._execute_left_commands()
+            
+        elif detection == "RIGHT":
+            print("DETECTED RIGHT")
+            logger.info("RIGHT arrow detected on obstacle {}".format(obstacle_num))
+            self.current_detection = "RIGHT"
+            return self._execute_right_commands()
+            
+        elif detection == "BULLSEYE":
+            print("DETECTED BULLSEYE")
+            logger.info("BULLSEYE detected - continuing mission")
+            self.current_detection = "BULLSEYE"
+            return True  # Continue mission
+            
+        else:
+            logger.error("No clear detection from vision system - cannot proceed safely")
+            self.current_detection = "NO_DETECTION"
+            logger.error("Task 2 requires valid detection to navigate safely")
+            self._emergency_stop()
+            return False
+            
+    def _detect_symbol(self) -> str:
+        """Detect arrow/bullseye symbol using actual vision system"""
+        try:
+            # Use actual vision system (same as MDP handler)
+            if self.vision_enabled and self.vision_client:
+                logger.info("Using actual vision detection for Task 2...")
+                
+                # Capture and detect single image (same method as MDP handler)
+                detection_result = self.vision_client.capture_and_detect_single()
+                
+                if detection_result and detection_result not in ("", "NO_TEXT", "DECODE_ERROR", "NA"):
+                    logger.info("Vision server result: {}".format(detection_result))
+                    
+                    # Map vision server response to Task 2 symbols
+                    detection_upper = detection_result.upper()
+                    
+                    # Check for arrow symbols
+                    if "LEFT" in detection_upper or "L" == detection_upper or "←" in detection_upper:
+                        logger.info("Mapped to LEFT arrow")
+                        return "LEFT"
+                    elif "RIGHT" in detection_upper or "R" == detection_upper or "→" in detection_upper:
+                        logger.info("Mapped to RIGHT arrow") 
+                        return "RIGHT"
+                    elif "BULL" in detection_upper or "TARGET" in detection_upper or "⊙" in detection_upper:
+                        logger.info("Mapped to BULLSEYE")
+                        return "BULLSEYE"
+                    else:
+                        logger.info("No recognized symbol in: {}".format(detection_result))
+                        return "NO_DETECTION"
+                else:
+                    logger.info("No valid detection from vision server")
+                    return "NO_DETECTION"
+            
+            else:
+                logger.error("Vision system not available! Cannot perform detection.")
+                return "NO_DETECTION"
+            
+        except Exception as e:
+            logger.error("Detection error: {}".format(e))
+            return "NO_DETECTION"
+            
+    def start_vision_detection(self):
+        """Start continuous vision detection for Task 2 (same as MDP handler)"""
+        if self.vision_enabled and self.vision_client:
+            try:
+                # Start vision detection in a separate thread
+                vision_thread = threading.Thread(
+                    target=self._run_vision_detection,
+                    daemon=True,
+                    name="Task2VisionThread"
+                )
+                vision_thread.start()
+                logger.info("Task 2 vision detection thread started")
+                return True
+            except Exception as e:
+                logger.error("Error starting Task 2 vision detection: {}".format(e))
+                return False
+        else:
+            logger.warning("Task 2 vision system not available")
+            return False
+    
+    def _run_vision_detection(self):
+        """Run vision detection in separate thread (same as MDP handler)"""
+        try:
+            logger.info("Starting Task 2 vision detection in background...")
+            if self.vision_client.start_continuous_detection():
+                logger.info("Task 2 vision detection running successfully")
+            else:
+                logger.error("Task 2 vision detection failed to start")
+        except Exception as e:
+            logger.error("Error in Task 2 vision detection thread: {}".format(e))
+    
+    def stop_vision_detection(self):
+        """Stop vision detection"""
+        if self.vision_client:
+            self.vision_client.stop_detection()
+            logger.info("Task 2 vision detection stopped")
+    
+    def _bluetooth_listen_thread(self):
+        """Bluetooth listening thread for Android commands"""
+        logger.info("Starting Bluetooth listener for Android Arena commands...")
+        
+        try:
+            # Check if Bluetooth device exists
+            if os.path.exists(self.bluetooth_device):
+                logger.info("Bluetooth device found: {}".format(self.bluetooth_device))
+                logger.info("Ready to receive commands from Android...")
+                
+                while self.bluetooth_enabled:
+                    try:
+                        # Open file fresh each time to read new command
+                        logger.debug("Opening Bluetooth device to check for command...")
+                        with open(self.bluetooth_device, 'r') as bt_conn:
+                            # Check if data is available to read (non-blocking)
+                            if select.select([bt_conn], [], [], 1.0)[0]:
+                                logger.info("Data available on Bluetooth, reading...")
+                                # Try to read with a shorter timeout
+                                # Read line or partial line
+                                try: ## "STM:SP"
+                                    command = bt_conn.read(1)  # Read up to 100 chars instead of readline
+                                    #command = command.strip()
+                                    logger.info("Raw command received: '{}'".format(repr(command)))
+                                    if command: 
+                                        logger.info("Received Android command: {}".format(command))
+                                        self._handle_bluetooth_command(command)
+                                        break
+                                    else:
+                                        logger.debug("Empty command received")
+                                except Exception as read_err:
+                                    logger.error("Error reading command: {}".format(read_err))
+                        
+                    except Exception as e:
+                        logger.error("Error reading Bluetooth data: {}".format(e))
+                        time.sleep(1)
+            else:
+                logger.warning("Bluetooth device {} not found - using fallback method".format(self.bluetooth_device))
+                
+               
+        except Exception as e:
+            logger.error("Bluetooth listener error: {}".format(e))
+            logger.info("Bluetooth communication disabled")
+            self.bluetooth_enabled = False
+        
+        logger.info("Bluetooth listener thread ended")
+    
+    def _handle_bluetooth_command(self, command: str):
+        """Handle commands received from Android via Bluetooth"""
+        command = command.upper().strip()
+        logger.info("Processing Bluetooth command from Android: '{}'".format(command))
+        logger.debug("Command length: {}, repr: {}".format(len(command), repr(command)))
+        
+        # Handle various Android Arena command formats
+        if (command == "S" or command == "START" or "TASK2:START" in command or 
+            command == "STM:SP" or "SP" in command or "START_PATH" in command):
+            logger.info("Received START command from Android Arena (SP Button pressed)")
+            print("[ANDROID] SP Button pressed - Starting Task 2...")
+            self._send_status_to_android("Task 2 Starting...")
+            success = self.start_task2_mission()
+            if success:
+                self._send_status_to_android("Task 2 Started Successfully")
+                print("[ANDROID] Task 2 mission started!")
+            else:
+                self._send_status_to_android("Task 2 Start Failed - Check connections")
+                print("[ANDROID] Failed to start Task 2 mission!")
+                
+        elif (command == "E" or command == "STOP" or command == "EMERGENCY" or 
+              "EMERGENCY" in command or "STOP" in command):
+            logger.info("Received EMERGENCY STOP command from Android Arena")
+            print("[ANDROID] Emergency stop requested...")
+            self._send_status_to_android("Emergency Stop Activated")
+            self.stop_mission()
+            self._send_status_to_android("Task 2 Stopped")
+            print("[ANDROID] Task 2 stopped!")
+            
+        elif command == "STATUS" or "STATUS" in command:
+            status = "Running" if self.task2_active else "Ready"
+            progress = "Obstacles: {}/{}".format(self.obstacles_completed, self.total_obstacles)
+            detection = " | Detection: {}".format(self.current_detection) if self.current_detection else ""
+            full_status = "{} - {}{}".format(status, progress, detection)
+            self._send_status_to_android(full_status)
+            print("[ANDROID] Status sent: {}".format(full_status))
+            
+        elif "CONNECT" in command or "INIT" in command:
+            logger.info("Android Arena connection established")
+            self._send_status_to_android("Task 2 Handler Ready")
+            print("[ANDROID] Connected to Arena - Task 2 ready!")
+            
+        else:
+            logger.warning("Unknown Android command: {}".format(command))
+            print("[ANDROID] Unknown command received: {}".format(command))
+            # Don't send unknown command response to avoid spam
+    
+    def _send_bluetooth_message(self, message: str):
+        """Send message to Android via existing Bluetooth connection"""
+        logger.info("Sending to Android: {}".format(message))
+        
+        try:
+            # Try to send via Bluetooth device
+            if self.bluetooth_enabled and os.path.exists(self.bluetooth_device):
+                with open(self.bluetooth_device, 'w') as bt_conn:
+                    bt_conn.write(message + '\n')
+                    bt_conn.flush()
+                logger.info("Message sent to Android successfully")
+            else:
+                # Fallback: just log the message
+                logger.info("Bluetooth not available - message logged: {}".format(message))
+                
+        except Exception as e:
+            logger.error("Error sending Bluetooth message: {}".format(e))
+            logger.info("Message for Android (not sent): {}".format(message))
+    
+    def _send_status_to_android(self, status_msg: str):
+        """Send status update to Android Arena in proper format"""
+        # Android Arena expects: STATUS,<message>
+        formatted_msg = "STATUS,{}".format(status_msg)
+        self._send_bluetooth_message(formatted_msg)
+            
+    def _send_stm32_command(self, command: str):
+        """Send raw command to STM32"""
+        if not self.stm32_serial:
+            logger.error("STM32 not connected!")
+            return False
+            
+        try:
+            logger.info("Sending to STM32: {}".format(command.strip()))
+            self.stm32_serial.write(command.encode())
+            self.stm32_serial.flush()
+            return True
+            
+        except Exception as e:
+            logger.error("Command send error: {}".format(e))
+            return False
+    
+    def _wait_for_stm32_response(self, expected_response="fM", timeout=30):
+        """Wait for specific response from STM32"""
+        if not self.stm32_serial:
+            logger.error("STM32 not connected!")
+            return False
+            
+        logger.info("Waiting for STM32 response: {}".format(expected_response))
+        start_time = time.time()
+        
+        try:
+            while time.time() - start_time < timeout:
+                if self.stm32_serial.in_waiting > 0:
+                    response = self.stm32_serial.readline().decode().strip()
+                    logger.info("STM32 response: {}".format(response))
+                    
+                    if expected_response in response:
+                        logger.info("Got expected response from STM32")
+                        return True
+                
+                time.sleep(0.1)
+            
+            logger.error("Timeout waiting for STM32 response")
+            return False
+            
+        except Exception as e:
+            logger.error("Error waiting for STM32 response: {}".format(e))
+            return False
+    
+    def _run_command_sequence(self, commands: list):
+        """Run a sequence of STM32 commands, wait for fM after sequence"""
+        for cmd in commands:
+            if not self.task2_active:
+                logger.warning("Task stopped during command sequence.")
+                return False
+            self._send_stm32_command(cmd)
+        # Wait for fM after sequence
+        if not self._wait_for_stm32_response(expected_response="fM"):
+            logger.error("Did not receive fM after command sequence!")
+            return False
+        return True
+
+    def _get_1st_left_commands(self):
+        return [
+            "T0|-25|0\n",
+            "T50|-25|35\n",
+            "T50|25|0\n",
+            "T50|25|45\n",
+            "T0|0|0\n",
+            "t50|0|20\n",
+            "T50|25|0\n",
+            "T50|25|35\n",
+            "T50|-25|0\n",
+            "T50|-25|40\n",
+            "M\n",
+        ]
+
+    def _get_1st_right_commands(self):
+        return [
+            "T0|25|0\n",
+            "T50|25|45\n",
+            "t50|0|10\n",
+            "T50|-25|0\n",
+            "T50|-25|45\n",
+            "T0|0|0\n",
+            "T50|-25|0\n",
+            "T50|-25|40\n",
+            "t50|0|20\n",
+            "T50|25|0\n",
+            "T50|25|45\n",
+            "M\n",
+        ]
+
+    def _get_2nd_left_commands(self):
+        return [
+           "T50|-25|45\n",
+            "t50|0|15\n",
+            "T50|-25|45\n",
+            "T0|0|0\n",
+            "R50|0|50\n",
+            "T50|0|10\n",
+            "T50|25|0\n",
+            "T50|25|38\n",
+            "t50|0|15\n",
+            "T50|25|0\n",
+            "T50|25|38\n",
+            "R50|0|50\n",
+            "T50|0|10\n",
+            "T0|0|0\n",
+            "T50|25|0\n",
+            "T50|25|38\n",
+            "t50|0|15\n",
+            "T50|25|0\n",
+            "T50|25|38\n",
+            "R50|0|50\n",
+            "T50|0|10\n",
+            "T50|25|45\n",
+            "t50|0|15\n",
+            "T50|25|45\n",
+            "T0|0|0\n",
+            "R50|0|50\n",
+            "T50|0|10\n",
+            "T50|25|0\n",
+            "T50|25|20\n",
+            "T50|-25|0\n",
+            "T50|-25|20\n",
+            "t50|0|15\n",
+            "a50|0|50\n",
+            "T50|0|10\n",
+            "T50|25|40\n",
+            "t50|0|20\n",
+            "T50|25|45\n",
+            "t50|0|10\n",
+            "a50|0|20\n",
+            "T50|-25|45\n",
+            "t50|0|15\n",
+            "T50|-25|45\n",
+            "W50|0|20\n",
+            "S\n",
+        ]
+
+    def _get_2nd_right_commands(self):
+        return[
+        "T50|25|45\n",
+        "t50|0|15\n",
+        "T50|25|45\n",
+        "T0|0|0\n",
+        "L50|0|40\n",
+        "T50|0|5\n",
+        "T50|-25|0\n",
+        "T50|-25|35\n",
+        "t50|0|15\n",
+        "T50|-25|0\n",
+        "T50|-25|35\n",
+        "L50|0|40\n",
+        "T50|0|10\n",
+
+        "T50|-25|0\n",
+        "T50|-25|35\n",
+        "t50|0|15\n",
+        "T50|-25|0\n",
+        "T50|-25|35\n",
+        "T50|0|20\n",
+        "T0|0|0\n",
+        "L50|0|60\n",
+
+        "T50|0|10\n",
+        "T50|-25|40\n",
+        "t50|0|15\n",
+        "T50|-25|40\n",
+        "T50|0|10\n",
+        "L50|0|60\n",
+
+        "T0|0|0\n",
+        "T50|-25|0\n",
+        "T50|-25|30\n",
+        "T50|25|0\n",
+        "T50|25|35\n",
+
+        "A50|0|40\n",
+
+        "T50|0|20\n",
+        "T50|-25|45\n",
+        "t50|0|15\n",
+        "T50|-25|45\n",
+        "A50|0|50\n",
+
+        "t50|0|20\n",
+        "T50|25|45\n",
+        "t50|0|15\n",
+        "T50|25|45\n",
+        "W50|0|20\n",
+        "S\n",
+        ]
+
+            
+    def _return_to_carpark(self):
+        """Return to starting carpark - not needed in simplified flow"""
+        logger.info("Mission complete - no carpark return needed")
+
+            
+    def _emergency_stop(self):
+        """Emergency stop"""
+        logger.warning("EMERGENCY STOP ACTIVATED!")
+        self.task2_active = False
+        self._send_status_to_android("Emergency Stop")
+        
+        if self.stm32_serial:
+            try:
+                self._send_stm32_command("S\n")  # Use new command method
+                logger.info("Stop command sent to STM32")
+            except Exception as e:
+                logger.error("Error sending stop: {}".format(e))
+                
+    def _mission_complete(self):
+        """Mission completion"""
+        logger.info("=" * 50)
+        logger.info("TASK 2 MISSION COMPLETED!")
+        logger.info("Obstacles completed: {}/{}".format(self.obstacles_completed, self.total_obstacles))
+        logger.info("=" * 50)
+        
+        self.task2_active = False
+        
+        # Final stop
+        self._send_stm32_command("S\n")
+        
+        # Signal that mission is complete and program should exit
+        self.mission_complete_flag = True
+        logger.info("Mission complete - shutting down...")
+        
+    def stop_mission(self):
+        """Stop current mission"""
+        logger.info("Stopping Task 2 mission...")
+        self._emergency_stop()
+        
+    def cleanup(self):
+        """Clean up resources"""
+        logger.info("Cleaning up Task 2 handler...")
+        
+        self.task2_active = False
+        
+        if self.stm32_serial:
+            try:
+                self._send_stm32_command("S\n")
+                time.sleep(0.5)
+                self.stm32_serial.close()
+            except:
+                pass
+                
+        if self.vision_client:
+            try:
+                self.vision_client.cleanup()
+                logger.info("Task 2 vision client cleaned up")
+            except:
+                pass
+        
+        if self.bluetooth_conn:
+            try:
+                self._send_bluetooth_message("DISCONNECTING")
+                self.bluetooth_conn.close()
+            except:
+                pass
+                
+        self.bluetooth_enabled = False
+            
+        logger.info("Task 2 cleanup completed")
+    
+    def main():
+        """Main function for Android Arena integration"""
+        print("\n" + "=" * 60)
+        print("TASK 2 - FASTEST CAR CHALLENGE")
+        print("=" * 60)
+        print("Ready for Android Arena integration!")
+        print("")
+        print("Android Integration:")
+        print("  - Press SP button in Android Arena to start Task 2")
+        print("  - Status updates will appear in Arena status window")
+        print("  - Listening for Bluetooth commands...")
+        print("")
+        print("Manual Override Commands:")
+        print("  Press Ctrl+C to exit")
+        print("=" * 60)
+        
+        handler = Task2Handler()
+        
+        try:
+            handler.initialize()
+            
+            # Start Bluetooth listening for Android commands
+            if handler.bluetooth_enabled:
+                print("\n[INFO] Listening for Android Arena commands via Bluetooth...")
+                print("[INFO] Press SP button in Android Arena to start Task 2")
+                bluetooth_thread = threading.Thread(target=handler._bluetooth_listen_thread, daemon=True)
+                bluetooth_thread.start()
+            else:
+                print("\n[WARNING] Bluetooth not available - using manual mode")
+            
+            # Keep the program running and listening for Android commands
+            print("\n[INFO] Task 2 Handler is ready and waiting for Android commands...")
+            print("[INFO] Press Ctrl+C to exit")
+
+
+            
+            while True:
+                time.sleep(1)  # Keep main thread alive
+                
+                # Check if mission is complete and should exit
+                if handler.mission_complete_flag:
+                    print("\n[INFO] Mission completed - exiting program...")
+                    break   
+            
+        except KeyboardInterrupt:
+            print("\nShutting down...")
+        except Exception as e:
+            logger.error("Error: {}".format(e))
+        finally:
+            handler.cleanup()
+
+if __name__ == "__main__":
+    main()

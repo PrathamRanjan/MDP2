@@ -1,0 +1,393 @@
+# detector1.py
+import os, json, base64, time, requests, cv2
+from typing import Dict, Any, Tuple, Optional
+ 
+# =========================
+# ENV & configuration
+# =========================
+RF_BASE = os.getenv("RF_BASE_URL", "http://127.0.0.1:9001").rstrip("/")
+ 
+GEN_ID  = os.getenv("RF_MODEL_GENERAL", "mdp-px1ej/1").strip()          # task 1
+ARR_ID  = os.getenv("RF_MODEL_ARROW",   "mdp-task-2-i2upb/1").strip()   # task 2
+ 
+RF_CONF       = float(os.getenv("RF_CONF", "0.30"))
+RF_CONF_ARROW = float(os.getenv("RF_CONF_ARROW", os.getenv("RF_CONF", "0.30")))
+RF_IOU        = float(os.getenv("RF_IOU",  "0.45"))
+RF_TIMEOUT    = float(os.getenv("RF_TIMEOUT", "3.0"))
+ 
+IR_MAX_SIDE   = int(os.getenv("IR_MAX_SIDE", "512"))   # resize max cạnh trước khi gửi
+IR_JPEG_Q     = int(os.getenv("IR_JPEG_Q", "70"))      # jpg quality khi encode
+ 
+# rescue khó (ví dụ digit 7 nền xấu)
+IR_MULTI_TRY  = int(os.getenv("IR_MULTI_TRY", "1"))    # 0/1
+IR_TRY_BUDGET = int(os.getenv("IR_TRY_BUDGET", "3"))   # số lần thử thêm
+IR_SECOND_SIZE= int(os.getenv("IR_SECOND_SIZE", "640"))
+IR_USE_CLAHE  = int(os.getenv("IR_USE_CLAHE", "1"))
+ 
+IR_ROI_MARGIN = float(os.getenv("IR_ROI_MARGIN", "0.18"))
+ 
+# Mapping & debug
+RF_MAP_FILE   = os.getenv("RF_MAP_FILE", "rf_map.json")
+RF_SAVE_DEBUG = int(os.getenv("RF_SAVE_DEBUG", "0"))
+RF_VERBOSE    = int(os.getenv("RF_VERBOSE", "0"))
+MIRROR_ARROW_LABEL = int(os.getenv("RF_MIRROR_ARROW_LABEL", "0"))  # left<->right nếu camera lật
+ 
+ARROW_SET = {"left", "right", "up", "down"}
+ 
+# =========================
+# Utilities
+# =========================
+_session = requests.Session()
+_map_cache: Optional[Dict[str, str]] = None
+ 
+def _log(*a):
+    if RF_VERBOSE:
+        print(*a, flush=True)
+ 
+def _load_map() -> Dict[str, str]:
+    global _map_cache
+    if _map_cache is None:
+        try:
+            with open(RF_MAP_FILE, "r", encoding="utf-8") as f:
+                _map_cache = json.load(f)
+        except Exception:
+            _map_cache = {}
+    return _map_cache
+ 
+def _map_label(raw: Any) -> str:
+    """raw có thể là id (int) hoặc tên (str). Trả về nhãn theo schema cũ (nếu có mapping)."""
+    m = _load_map()
+    key = str(raw)
+    return m.get(key, str(raw))
+ 
+def _short_side_resize(img, max_side=IR_MAX_SIDE):
+    if max_side <= 0: 
+        return img
+    h, w = img.shape[:2]
+    s = max(h, w)
+    if s <= max_side:
+        return img
+    r = max_side / float(s)
+    nh, nw = int(round(h*r)), int(round(w*r))
+    return cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
+ 
+def _encode_jpg(img, q=IR_JPEG_Q):
+    ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), int(q)])
+    if not ok:
+        # fallback
+        ok, buf = cv2.imencode(".jpg", img)
+    assert ok
+    return base64.b64encode(buf).decode()
+ 
+def _clahe_if_needed(img):
+    if not IR_USE_CLAHE: 
+        return img
+    yuv = cv2.cvtColor(img, cv2.COLOR_BGR2YUV)
+    y, u, v = cv2.split(yuv)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    y2 = clahe.apply(y)
+    yuv2 = cv2.merge([y2, u, v])
+    return cv2.cvtColor(yuv2, cv2.COLOR_YUV2BGR)
+ 
+def _infer_v2(img_bgr, model_id: str, conf: Optional[float] = None) -> Dict:
+    original_h, original_w = img_bgr.shape[:2]
+    img = _short_side_resize(img_bgr, IR_MAX_SIDE)
+    resized_h, resized_w = img.shape[:2]
+    
+    b64 = _encode_jpg(img, IR_JPEG_Q)
+    payload = {
+        "model_id": model_id,
+        "image": {"type": "base64", "value": b64},
+        "confidence": float(conf if conf is not None else RF_CONF),
+        "iou_threshold": RF_IOU
+    }
+    r = _session.post(f"{RF_BASE}/infer/object_detection", json=payload, timeout=RF_TIMEOUT)
+    r.raise_for_status()
+    result = r.json()
+    
+    # Add scaling factors to the result for later coordinate correction
+    result["scale_factor_x"] = original_w / resized_w
+    result["scale_factor_y"] = original_h / resized_h
+    result["original_width"] = original_w
+    result["original_height"] = original_h
+    
+    return result
+ 
+def _xywh_to_xyxy(x, y, w, h, W, H):
+    x1 = max(0, int(x))
+    y1 = max(0, int(y))
+    x2 = min(W, int(x + w))
+    y2 = min(H, int(y + h))
+    return x1, y1, x2, y2
+ 
+def _crop_with_margin(img, box_xyxy, margin=IR_ROI_MARGIN):
+    x1, y1, x2, y2 = box_xyxy
+    h, w = img.shape[:2]
+    bw, bh = (x2 - x1), (y2 - y1)
+    side = int(max(bw, bh) * (1.0 + margin))
+    cx = (x1 + x2) // 2
+    cy = (y1 + y2) // 2
+    nx1 = max(0, cx - side // 2); ny1 = max(0, cy - side // 2)
+    nx2 = min(w, nx1 + side);     ny2 = min(h, ny1 + side)
+    return img[ny1:ny2, nx1:nx2]
+ 
+def _pick_best(pred_json: Dict, allow: Optional[set] = None) -> Optional[Tuple[str, float, Tuple[int,int,int,int], str, str]]:
+    """
+    Trả về (label_mapped, conf, (x1,y1,x2,y2), raw_label_str, numeric_id)
+    """
+    preds = pred_json.get("predictions") or pred_json.get("preds") or []
+    best = None
+    H = int(pred_json.get("image", {}).get("height", 0) or 0)
+    W = int(pred_json.get("image", {}).get("width", 0)  or 0)
+    
+    # Get scaling factors if available
+    scale_x = pred_json.get("scale_factor_x", 1.0)
+    scale_y = pred_json.get("scale_factor_y", 1.0)
+    original_w = pred_json.get("original_width", W)
+    original_h = pred_json.get("original_height", H)
+ 
+    for p in preds:
+        raw = p.get("class", p.get("class_name", p.get("class_id")))
+        conf = float(p.get("confidence", p.get("score", 0.0)))
+        
+        # bbox center format -> pixel
+        if "x" in p and "y" in p and "width" in p and "height" in p:
+            x = float(p["x"]) - float(p["width"])/2
+            y = float(p["y"]) - float(p["height"])/2
+            box = _xywh_to_xyxy(x, y, float(p["width"]), float(p["height"]), W, H)
+        else:
+            box = (int(p.get("x1",0)), int(p.get("y1",0)), int(p.get("x2",0)), int(p.get("y2",0)))
+        
+        # Scale coordinates back to original image size
+        x1, y1, x2, y2 = box
+        x1 = int(x1 * scale_x)
+        y1 = int(y1 * scale_y)
+        x2 = int(x2 * scale_x)
+        y2 = int(y2 * scale_y)
+        
+        # Ensure coordinates are within bounds
+        x1 = max(0, min(x1, original_w))
+        y1 = max(0, min(y1, original_h))
+        x2 = max(0, min(x2, original_w))
+        y2 = max(0, min(y2, original_h))
+        
+        box = (x1, y1, x2, y2)
+ 
+        mapped = _map_label(raw)
+        # Extract numeric ID - if raw is numeric, use it; otherwise use "?"
+        numeric_id = str(raw) if str(raw).isdigit() else "?"
+        
+        if allow and mapped not in allow:
+            continue
+        if best is None or conf > best[1]:
+            best = (mapped, conf, box, str(raw), numeric_id)
+    return best
+ 
+def _maybe_flip_arrow(label: str) -> str:
+    if not MIRROR_ARROW_LABEL: return label
+    if label == "left":  return "right"
+    if label == "right": return "left"
+    return label
+ 
+# =========================
+# API chính
+# =========================
+def detect_symbol(frame_bgr, save_debug: bool=False) -> Tuple[str, float]:
+    """
+    Trả về (symbol, confidence). Symbol theo schema cũ: 1-9, A-Z, up/down/left/right, bullseye, circle, NA
+    """
+    t0 = time.time()
+ 
+    # --- Preprocess nhẹ để tăng ổn định trên nền xấu ---
+    base_img = _clahe_if_needed(frame_bgr)
+ 
+    # 1) Tổng hợp
+    try:
+        j = _infer_v2(base_img, GEN_ID, conf=RF_CONF)
+    except Exception as e:
+        _log("[ERROR] GEN infer:", repr(e))
+        return ("NA", 0.0)
+ 
+    best = _pick_best(j, allow=None)
+    if not best:
+        if save_debug or RF_SAVE_DEBUG: cv2.imwrite("rf_debug_no_det.jpg", frame_bgr)
+        return ("NA", 0.0)
+ 
+    label, conf, box, raw, numeric_id = best
+ 
+    # 2) Nếu nghi là mũi tên -> refine bằng model arrow
+    if (label in ARROW_SET or str(raw) in {"14", "17"}) and ARR_ID:
+        roi = _crop_with_margin(base_img, box, IR_ROI_MARGIN)
+        try:
+            j2 = _infer_v2(roi, ARR_ID, conf=RF_CONF_ARROW)
+            arrow_best = _pick_best(j2, allow=ARROW_SET)
+        except Exception as e:
+            _log("[ERROR] ARROW infer:", repr(e))
+            arrow_best = None
+
+        _log("[ARROW] raw_gen:", raw, "gen_label:", label,
+            "| refine:", arrow_best[0] if arrow_best else None)
+
+        if arrow_best:
+            label, conf, _, raw2 = arrow_best
+            label = _maybe_flip_arrow(label)
+            raw = f"{raw}->{raw2}"
+ 
+    # 3) Rescue 
+    if IR_MULTI_TRY and (label == "NA" or conf < 0.25):
+        tries = 0
+        img2 = cv2.resize(base_img, None, fx=IR_SECOND_SIZE/max(base_img.shape[:2]),
+                          fy=IR_SECOND_SIZE/max(base_img.shape[:2]), interpolation=cv2.INTER_LINEAR)
+        while tries < IR_TRY_BUDGET:
+            tries += 1
+            try:
+                jx = _infer_v2(img2, GEN_ID, conf=max(0.15, RF_CONF*0.8))
+                b2 = _pick_best(jx, allow=None)
+                if b2 and b2[1] > conf:
+                    label, conf, box, raw = b2
+                    _log(f"[RESCUE] try#{tries} ->", label, f"{conf:.2f}")
+                    break
+            except Exception as e:
+                _log("[RESCUE error]", repr(e))
+                break
+ 
+    # 4) Debug save
+    if save_debug or RF_SAVE_DEBUG:
+        x1,y1,x2,y2 = box
+        dbg = frame_bgr.copy()
+        cv2.rectangle(dbg, (x1,y1), (x2,y2), (0,255,0), 2)
+        cv2.putText(dbg, f"{label} {conf:.2f}", (x1, max(20,y1-5)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2, cv2.LINE_AA)
+        cv2.imwrite("rf_debug_last.jpg", dbg)
+ 
+    dt = 1000*(time.time()-t0)
+    print(f"[DETECT] {label} conf={conf:.3f} raw={raw} in {dt:.1f} ms")
+    # Return letter with numeric ID for Android app
+    result_text = f"{label} [{numeric_id}]" if numeric_id != "?" else label
+    return (result_text, conf)
+
+def detect_symbol_with_annotation(frame_bgr, save_debug: bool=False) -> Tuple[str, float, Any]:
+    """
+    Trả về (symbol, confidence, annotated_frame). 
+    Symbol theo schema cũ: 1-9, A-Z, up/down/left/right, bullseye, circle, NA
+    annotated_frame là frame gốc với bounding box và label được vẽ lên
+    """
+    t0 = time.time()
+ 
+    # --- Preprocess nhẹ để tăng ổn định trên nền xấu ---
+    base_img = _clahe_if_needed(frame_bgr)
+    
+    # Create annotated frame (copy of original)
+    annotated_frame = frame_bgr.copy()
+ 
+    # 1) Tổng hợp
+    try:
+        j = _infer_v2(base_img, GEN_ID, conf=RF_CONF)
+    except Exception as e:
+        _log("[ERROR] GEN infer:", repr(e))
+        return ("NA", 0.0, annotated_frame)
+ 
+    best = _pick_best(j, allow=None)
+    if not best:
+        if save_debug or RF_SAVE_DEBUG: cv2.imwrite("rf_debug_no_det.jpg", frame_bgr)
+        return ("NA", 0.0, annotated_frame)
+ 
+    label, conf, box, raw, numeric_id = best
+    original_box = box  # Store original box for annotation
+ 
+    # 2) Nếu nghi là mũi tên -> refine bằng model arrow
+    if label in ARROW_SET and ARR_ID:
+        roi = _crop_with_margin(base_img, box, IR_ROI_MARGIN)
+        try:
+            j2 = _infer_v2(roi, ARR_ID, conf=RF_CONF_ARROW)
+            arrow_best = _pick_best(j2, allow=ARROW_SET)
+        except Exception as e:
+            _log("[ERROR] ARROW infer:", repr(e))
+            arrow_best = None
+ 
+        _log("[ARROW] raw_gen:", raw, "gen_label:", label,
+             "| refine:", arrow_best[0] if arrow_best else None)
+ 
+        if arrow_best:
+            # Keep the original bounding box, only update label and confidence
+            label, arrow_conf, _, raw2, numeric_id2 = arrow_best
+            label = _maybe_flip_arrow(label)
+            conf = arrow_conf  # Use arrow model confidence
+            raw = f"{raw}->{raw2}"
+            numeric_id = numeric_id2  # Use the refined numeric ID
+            # original_box remains unchanged - this is the key fix!
+ 
+    # 3) Rescue 
+    if IR_MULTI_TRY and (label == "NA" or conf < 0.25):
+        tries = 0
+        img2 = cv2.resize(base_img, None, fx=IR_SECOND_SIZE/max(base_img.shape[:2]),
+                          fy=IR_SECOND_SIZE/max(base_img.shape[:2]), interpolation=cv2.INTER_LINEAR)
+        while tries < IR_TRY_BUDGET:
+            tries += 1
+            try:
+                jx = _infer_v2(img2, GEN_ID, conf=max(0.15, RF_CONF*0.8))
+                b2 = _pick_best(jx, allow=None)
+                if b2 and b2[1] > conf:
+                    label, conf, original_box, raw = b2  # Update both label and box
+                    _log(f"[RESCUE] try#{tries} ->", label, f"{conf:.2f}")
+                    break
+            except Exception as e:
+                _log("[RESCUE error]", repr(e))
+                break
+ 
+    # 4) Annotate the frame
+    if original_box:
+        x1, y1, x2, y2 = original_box
+        
+        # Draw bounding box with thicker line
+        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
+        
+        # Create more readable label text
+        label_text = f"{label} (ID: {raw}) {conf:.2f}"
+        
+        # Use larger font for better readability
+        font_scale = 0.7
+        thickness = 2
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        
+        # Get text size for background
+        (text_width, text_height), baseline = cv2.getTextSize(label_text, font, font_scale, thickness)
+        
+        # Calculate text position (above the box, or below if not enough space)
+        text_x = x1
+        text_y = y1 - 10
+        
+        # If text would go above image, put it below the box
+        if text_y - text_height < 0:
+            text_y = y2 + text_height + 10
+        
+        # Draw semi-transparent background for text
+        overlay = annotated_frame.copy()
+        cv2.rectangle(overlay, 
+                     (text_x - 5, text_y - text_height - 5), 
+                     (text_x + text_width + 5, text_y + baseline + 5), 
+                     (0, 255, 0), -1)
+        
+        # Blend the overlay with the original image for transparency
+        alpha = 0.8
+        cv2.addWeighted(overlay, alpha, annotated_frame, 1 - alpha, 0, annotated_frame)
+        
+        # Draw text with black color for better contrast
+        cv2.putText(annotated_frame, label_text, (text_x, text_y),
+                    font, font_scale, (0, 0, 0), thickness, cv2.LINE_AA)
+        
+        # Add a small circle at the center of the detection for precise location
+        center_x = (x1 + x2) // 2
+        center_y = (y1 + y2) // 2
+        cv2.circle(annotated_frame, (center_x, center_y), 4, (0, 255, 0), -1)
+        cv2.circle(annotated_frame, (center_x, center_y), 4, (0, 0, 0), 1)
+ 
+    # 5) Debug save
+    if save_debug or RF_SAVE_DEBUG:
+        cv2.imwrite("rf_debug_last.jpg", annotated_frame)
+ 
+    dt = 1000*(time.time()-t0)
+    print(f"[DETECT] {label} conf={conf:.3f} raw={raw} in {dt:.1f} ms")
+    # Return letter with numeric ID for Android app
+    result_text = f"{label} [{numeric_id}]" if numeric_id != "?" else label
+    return (result_text, conf, annotated_frame)

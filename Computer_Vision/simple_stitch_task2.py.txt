@@ -1,0 +1,303 @@
+import os
+import cv2
+import glob
+import numpy as np
+from collections import defaultdict
+import json
+import shutil
+from datetime import datetime
+
+def organize_task2_files():
+    """
+    Organize Task 2 detection files into folders for better management
+    """
+    print("[ORGANIZE] Organizing Task 2 detection files...")
+    
+    # Create organized folder structure for Task 2
+    base_dir = "detection_results/task2"
+    os.makedirs(f"{base_dir}/raw_detections", exist_ok=True)
+    os.makedirs(f"{base_dir}/annotated_images", exist_ok=True)
+    os.makedirs(f"{base_dir}/debug_frames", exist_ok=True)
+    os.makedirs(f"{base_dir}/stitched_outputs", exist_ok=True)
+    
+    return base_dir
+
+def find_task2_detection_images():
+    """
+    Find all Task 2 detection images from task2/annotated_images folder - returns ALL images, not just unique
+    """
+    all_detections = []  # List of all detections
+    
+    # Look for successful Task 2 detections in task2/annotated_images folder only
+    annotated_files = glob.glob("detection_results/task2/annotated_images/annotated_*.jpg")
+    print(f"Found {len(annotated_files)} Task 2 successful detections in task2/annotated_images")
+    
+    for file_path in annotated_files:
+        try:
+            # Parse filename: annotated_{symbol}_{timestamp}.jpg
+            filename = os.path.basename(file_path)
+            if filename.startswith('annotated_'):
+                parts = filename.replace('annotated_', '').replace('.jpg', '').split('_')
+                if len(parts) >= 2:
+                    symbol = parts[0]
+                    if symbol != "NA" and symbol:
+                        # Extract confidence from the Task 2 JSON file
+                        confidence = extract_task2_confidence_from_image(file_path)
+                        mtime = os.path.getmtime(file_path)
+                        
+                        detection_info = {
+                            'symbol': symbol,
+                            'file_path': file_path,
+                            'timestamp': mtime,
+                            'confidence': confidence,
+                            'source': 'task2_annotated',
+                            'filename': filename
+                        }
+                        
+                        all_detections.append(detection_info)
+                        print(f"Found Task 2 detection: {symbol} (conf: {confidence:.3f}) - {filename}")
+        except Exception as e:
+            print(f"Error parsing {file_path}: {e}")
+    
+    # Sort by timestamp (oldest to newest) to maintain chronological order
+    all_detections.sort(key=lambda x: x['timestamp'])
+    
+    if not all_detections:
+        print("[WARNING] No successful Task 2 detections found in task2/annotated_images folder!")
+        print("Make sure your Task 2 model server has run and detected some symbols successfully.")
+        print("Only successful detections (left, right, bullseye) are saved to task2/annotated_images/")
+    
+    return all_detections
+
+def extract_task2_confidence_from_image(image_path):
+    """
+    Extract confidence score from Task 2 JSON file or return default
+    """
+    try:
+        # First try to find corresponding Task 2 JSON file
+        json_path = image_path.replace('.jpg', '.json')
+        if os.path.exists(json_path):
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+                confidence = float(data.get('confidence', 0.5))
+                print(f"[TASK2 CONFIDENCE] Read from JSON: {confidence:.3f} for {os.path.basename(image_path)}")
+                return confidence
+        
+        # If no JSON file, use default confidence
+        print(f"[TASK2 CONFIDENCE] No JSON found for {os.path.basename(image_path)}, using default 0.5")
+        return 0.5  # Default confidence when no JSON is available
+        
+    except Exception as e:
+        print(f"Error extracting Task 2 confidence from {image_path}: {e}")
+        return 0.5
+
+def create_task2_stitch(detections, output_dir="detection_results/task2/stitched_outputs", images_per_row=3):
+    """
+    Create a grid-based stitch of unique Task 2 detection images arranged in rows
+    """
+    if not detections:
+        print("No Task 2 detections to stitch!")
+        return False
+    
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Generate timestamped filename
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_file = f"{output_dir}/task2_detections_{timestamp}.png"
+    
+    print(f"Creating Task 2 stitched image with {len(detections)} detections in rows of {images_per_row}...")
+    
+    # Load and process images
+    images = []
+    image_info = []
+    target_size = (320, 240)  # Slightly larger for Task 2 symbols
+    
+    # Now detections is a list, not a dictionary
+    for detection in detections:
+        img = cv2.imread(detection['file_path'])
+        if img is None:
+            print(f"Warning: Could not load image {detection['file_path']}")
+            continue
+            
+        # Resize image maintaining aspect ratio
+        h, w = img.shape[:2]
+        aspect_ratio = w / h
+        
+        if aspect_ratio > target_size[0] / target_size[1]:
+            # Width is the limiting factor
+            new_w = target_size[0]
+            new_h = int(target_size[0] / aspect_ratio)
+        else:
+            # Height is the limiting factor
+            new_h = target_size[1]
+            new_w = int(target_size[1] * aspect_ratio)
+        
+        resized_img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        
+        # Create padded image with dark background
+        padded_img = np.ones((target_size[1], target_size[0], 3), dtype=np.uint8) * 40
+        
+        # Center the resized image
+        start_y = (target_size[1] - new_h) // 2
+        start_x = (target_size[0] - new_w) // 2
+        padded_img[start_y:start_y + new_h, start_x:start_x + new_w] = resized_img
+        
+        # Add Task 2 specific border color based on symbol type
+        symbol = detection['symbol']
+        border_color = (0, 255, 0)  # Default green
+        if symbol.lower() == "left":
+            border_color = (255, 0, 0)  # Blue for left arrow
+        elif symbol.lower() == "right":
+            border_color = (0, 0, 255)  # Red for right arrow
+        elif symbol.lower() == "bullseye":
+            border_color = (0, 255, 255)  # Yellow for bullseye
+        
+        cv2.rectangle(padded_img, (0, 0), (target_size[0]-1, target_size[1]-1), border_color, 3)
+        
+        images.append(padded_img)
+        image_info.append({
+            'symbol': detection['symbol'],
+            'confidence': detection['confidence'],
+            'original_path': detection['file_path']
+        })
+    
+    if not images:
+        print("No valid Task 2 images to stitch!")
+        return False
+    
+    # Calculate grid dimensions
+    cols = min(images_per_row, len(images))
+    rows = (len(images) + cols - 1) // cols
+    
+    # Calculate stitched image dimensions
+    margin = 15
+    text_height = 60
+    header_height = 100
+    bottom_padding = 20  # Add padding at bottom
+    
+    stitch_width = cols * target_size[0] + (cols - 1) * margin + 20  # Add small padding on sides
+    stitch_height = header_height + rows * (target_size[1] + text_height + margin) + bottom_padding
+    
+    # Create stitched image with dark background
+    stitched = np.ones((stitch_height, stitch_width, 3), dtype=np.uint8) * 25
+    
+    # Add header with Task 2 specific information
+    title_text = f"TASK 2 DETECTION RESULTS - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    cv2.putText(stitched, title_text, (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+    
+    subtitle_text = f"Symbols: Left Arrow, Right Arrow, Bullseye | Detections: {len(images)}"
+    cv2.putText(stitched, subtitle_text, (20, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1, cv2.LINE_AA)
+    
+    # Add separator line
+    cv2.line(stitched, (10, 85), (stitch_width - 10, 85), (100, 100, 100), 2)
+    
+    # Place images in grid
+    left_padding = 10  # Add left padding
+    for i, (img, info) in enumerate(zip(images, image_info)):
+        row = i // cols
+        col = i % cols
+        
+        start_x = left_padding + col * (target_size[0] + margin)
+        start_y = header_height + row * (target_size[1] + text_height + margin)
+        
+        # Place image
+        stitched[start_y:start_y + target_size[1], start_x:start_x + target_size[0]] = img
+        
+        # Add symbol label and confidence below image
+        text_y = start_y + target_size[1] + 25
+        symbol_text = f"{info['symbol'].upper()}"
+        conf_text = f"Conf: {info['confidence']:.3f}"
+        
+        # Symbol name (larger text)
+        cv2.putText(stitched, symbol_text, (start_x + 5, text_y), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+        
+        # Confidence (smaller text)
+        cv2.putText(stitched, conf_text, (start_x + 5, text_y + 25), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA)
+    
+    # Save stitched image
+    if cv2.imwrite(output_file, stitched):
+        print(f"[SUCCESS] Task 2 stitched image saved: {output_file}")
+        
+        # Create summary JSON
+        summary = {
+            'task': 'task2',
+            'timestamp': datetime.now().isoformat(),
+            'total_detections': len(images),
+            'symbols_detected': list(set([info['symbol'] for info in image_info])),
+            'output_file': output_file,
+            'detections': [
+                {
+                    'symbol': info['symbol'], 
+                    'confidence': info['confidence'],
+                    'source_file': os.path.basename(info['original_path'])
+                } 
+                for info in image_info
+            ]
+        }
+        
+        summary_file = f"{output_dir}/task2_summary_{timestamp}.json"
+        with open(summary_file, 'w') as f:
+            json.dump(summary, f, indent=2)
+        print(f"  Task 2 summary saved to: {summary_file}")
+        
+        return output_file
+    else:
+        print(f"[ERROR] Failed to save Task 2 stitched image")
+        return False
+
+def main():
+    print("="*50)
+    print("TASK 2 SYMBOL DETECTION STITCHER")
+    print("="*50)
+    print("Task 2 Symbols: Left Arrow, Right Arrow, Bullseye")
+    print(f"Working in: {os.getcwd()}")
+    
+    # First, organize all Task 2 files into folders
+    base_dir = organize_task2_files()
+    
+    # Find all Task 2 detection images
+    detections = find_task2_detection_images()
+    
+    if not detections:
+        print("\n[ERROR] No Task 2 detection images found!")
+        print("\nMake sure you have:")
+        print("1. Run model_server_task2.py (Task 2 server)")
+        print("2. Successfully detected left/right arrows or bullseye symbols")
+        print("3. Images saved to detection_results/task2/annotated_images/")
+        print("\nRun your Task 2 detection system first, then run this script.")
+        return
+    
+    print(f"\n[IMAGES] Found {len(detections)} Task 2 detections:")
+    for detection in detections:
+        print(f"  • {detection['symbol'].upper()} (confidence: {detection['confidence']:.3f}) - {detection['filename']}")
+    
+    # Create Task 2 stitched image in grid layout
+    output_file = create_task2_stitch(detections)
+    
+    if output_file:
+        print(f"\n[COMPLETE] TASK 2 STITCHING COMPLETE!")
+        print(f"[FILES] Files organized in '{base_dir}/':")
+        print(f"   [FOLDER] raw_detections/ - All Task 2 detection attempts")
+        print(f"   [FOLDER] annotated_images/ - Successful Task 2 detections")
+        print(f"   [FOLDER] debug_frames/ - Task 2 debug frames")
+        print(f"   [FOLDER] stitched_outputs/ - Task 2 stitched results")
+        print(f"\n[OUTPUT] Latest Task 2 output: {os.path.basename(output_file)}")
+        
+        # Show symbol counts
+        symbol_counts = {}
+        for detection in detections:
+            symbol = detection['symbol']
+            symbol_counts[symbol] = symbol_counts.get(symbol, 0) + 1
+        
+        print(f"\n[SUMMARY] Task 2 Symbol Summary:")
+        for symbol, count in sorted(symbol_counts.items()):
+            print(f"   {symbol.upper()}: {count}")
+            
+    else:
+        print(f"\n[ERROR] Failed to create Task 2 stitched image")
+
+if __name__ == "__main__":
+    main()

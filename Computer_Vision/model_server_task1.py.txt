@@ -1,0 +1,221 @@
+import socket
+import cv2
+import numpy as np
+import struct
+import datetime
+import os
+import json
+import detector1
+import subprocess
+import sys
+import glob
+
+HOST = "0.0.0.0"
+PORT = 8000
+
+def run_stitch_and_display():
+    """
+    Run simple_stitch.py and display the resulting image in fullscreen
+    """
+    print("\n" + "="*50)
+    print("[SERVER] Running simple_stitch.py...")
+    print("="*50)
+    
+    try:
+        # Run simple_stitch.py
+        result = subprocess.run([sys.executable, "simple_stitch.py"], 
+                              capture_output=True, text=True, cwd=os.getcwd())
+        
+        if result.returncode == 0:
+            print("[SERVER] simple_stitch.py completed successfully!")
+            print(result.stdout)
+            
+            # Find the most recent stitched image
+            stitched_files = glob.glob("detection_results/stitched_outputs/unique_detections_*.png")
+            if stitched_files:
+                # Get the most recent file
+                latest_stitched = max(stitched_files, key=os.path.getctime)
+                print(f"[SERVER] Found stitched image: {latest_stitched}")
+                
+                # Display the image in fullscreen
+                display_fullscreen_image(latest_stitched)
+            else:
+                print("[SERVER] No stitched images found!")
+        else:
+            print(f"[SERVER] simple_stitch.py failed with error code {result.returncode}")
+            print("STDOUT:", result.stdout)
+            print("STDERR:", result.stderr)
+            
+    except Exception as e:
+        print(f"[SERVER] Error running simple_stitch.py: {e}")
+
+def display_fullscreen_image(image_path):
+    """
+    Display an image in fullscreen mode
+    """
+    try:
+        print(f"[SERVER] Displaying image in fullscreen: {os.path.basename(image_path)}")
+        
+        # Load the image
+        image = cv2.imread(image_path)
+        if image is None:
+            print(f"[SERVER] Failed to load image: {image_path}")
+            return
+            
+        # Get screen resolution (approximate for fullscreen)
+        screen_width = 1920  # Default, will be adjusted by OpenCV
+        screen_height = 1080
+        
+        # Create a named window and set it to fullscreen
+        window_name = "Detection Results - Press ESC to close"
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        
+        # Display the image
+        cv2.imshow(window_name, image)
+        
+        print("[SERVER] Image displayed in fullscreen. Press ESC or 'q' to close.")
+        print("[SERVER] Press any other key to continue...")
+        
+        # Wait for key press
+        while True:
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27 or key == ord('q'):  # ESC key or 'q'
+                break
+                
+        cv2.destroyAllWindows()
+        print("[SERVER] Image display closed.")
+        
+    except Exception as e:
+        print(f"[SERVER] Error displaying image: {e}")
+        # Try to display anyway without fullscreen
+        try:
+            cv2.imshow("Detection Results", image)
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+        except:
+            print("[SERVER] Could not display image at all")
+
+def main():
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind((HOST, PORT))
+    server.listen(1)
+    print(f"[SERVER] Listening on {HOST}:{PORT}")
+
+    conn = None
+    try:
+        conn, addr = server.accept()
+        print(f"[SERVER] Connected by {addr}")
+
+        data = b""
+        payload_size = 4  # match client '>I'
+        while True:
+            # Receive length header
+            while len(data) < payload_size:
+                packet = conn.recv(4096)
+                if not packet:
+                    print("[SERVER] Connection closed")
+                    return
+                data += packet
+            packed_msg_size = data[:payload_size]
+            data = data[payload_size:]
+            msg_size = struct.unpack('>I', packed_msg_size)[0]
+
+            # Receive frame
+            while len(data) < msg_size:
+                packet = conn.recv(4096)
+                if not packet:
+                    print("[SERVER] Connection closed")
+                    return
+                data += packet
+            frame_data = data[:msg_size]
+            data = data[msg_size:]
+
+            # Decode image
+            frame = cv2.imdecode(np.frombuffer(frame_data, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if frame is None:
+                print("[SERVER] Failed to decode frame")
+                continue
+            print(f"[SERVER] Received frame {frame.shape}")
+
+            # Save detected images for verification
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+
+            # Create detection_results folder structure
+            os.makedirs("detection_results/raw_detections", exist_ok=True)
+            os.makedirs("detection_results/annotated_images", exist_ok=True)
+            os.makedirs("detection_results/debug_frames", exist_ok=True)
+
+            # Run detector1 to detect symbols and get annotated frame
+            detected_text, confidence, annotated_frame = detector1.detect_symbol_with_annotation(frame, save_debug=True)
+            print(f"[SERVER] Detected: {detected_text} (confidence: {confidence:.3f})")
+
+            # --- SAVE DETECTED IMAGES FOR STITCHING ---
+            # Images will be processed by simple_stitch.py when server stops
+            
+            # The annotated_frame already contains the bounding boxes and labels
+            # Add summary text at the top - extract letter and numeric ID for display
+            if detected_text != "NA" and "[" in detected_text and "]" in detected_text:
+                # Extract letter and numeric ID from "A [0]" format
+                letter = detected_text.split(" [")[0]
+                numeric_id = detected_text.split("[")[1].split("]")[0]
+                summary_text = f"Detected: {letter} ({numeric_id})"
+            else:
+                summary_text = f"Detected: {detected_text}"
+            cv2.putText(annotated_frame, summary_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+            
+            # Save to raw_detections (ALL images go here)
+            raw_filename = f"detection_results/raw_detections/detection_{detected_text}_{timestamp}.jpg"
+            cv2.imwrite(raw_filename, annotated_frame)
+            print(f"[SERVER] Saved to raw_detections: {raw_filename}")
+            
+            # Conditional saving based on detection result
+            if detected_text != "NA":
+                # Successful detection -> save to annotated_images
+                annotated_filename = f"detection_results/annotated_images/annotated_{detected_text}_{timestamp}.jpg"
+                cv2.imwrite(annotated_filename, annotated_frame)
+                print(f"[SERVER] Saved successful detection: {annotated_filename}")
+                
+                # Save confidence data as JSON
+                confidence_data = {
+                    "symbol": detected_text,
+                    "confidence": confidence,
+                    "timestamp": timestamp,
+                    "image_file": annotated_filename
+                }
+                json_filename = f"detection_results/annotated_images/annotated_{detected_text}_{timestamp}.json"
+                with open(json_filename, 'w') as f:
+                    json.dump(confidence_data, f, indent=2)
+                print(f"[SERVER] Saved confidence data: {json_filename}")
+            else:
+                # Failed detection (NA) -> save original frame to debug_frames
+                debug_filename = f"detection_results/debug_frames/debug_NA_{timestamp}.jpg"
+                cv2.imwrite(debug_filename, frame)  # Save original frame, not annotated
+                print(f"[SERVER] Saved failed detection to debug: {debug_filename}")
+            
+            # Always save original frame for debugging purposes
+            debug_original = f"detection_results/debug_frames/original_{timestamp}.jpg"
+            cv2.imwrite(debug_original, frame)
+            print(f"[SERVER] Saved original frame: {debug_original}")
+
+            # Send result back
+            resp_bytes = detected_text.encode('utf-8')
+            conn.sendall(struct.pack('>I', len(resp_bytes)) + resp_bytes)
+
+    except KeyboardInterrupt:
+        print("\n[SERVER] Server interrupted by user")
+    except Exception as e:
+        print(f"[SERVER] Server error: {e}")
+    finally:
+        # cv2.destroyAllWindows() # Not available in headless mode
+        if conn:
+            conn.close()
+        server.close()
+        print("[SERVER] Server closed")
+        
+        # Run simple_stitch.py and display the result when server stops
+        run_stitch_and_display()
+
+if __name__ == "__main__":
+    main()

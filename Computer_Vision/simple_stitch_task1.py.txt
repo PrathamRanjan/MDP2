@@ -1,0 +1,303 @@
+import os
+import cv2
+import glob
+import numpy as np
+from collections import defaultdict
+import json
+import shutil
+from datetime import datetime
+
+def organize_files():
+    """
+    Organize detection files into folders for better management
+    """
+    print("📁 Organizing detection files...")
+    
+    # Create organized folder structure
+    base_dir = "detection_results"
+    os.makedirs(base_dir, exist_ok=True)
+    os.makedirs(f"{base_dir}/raw_detections", exist_ok=True)
+    os.makedirs(f"{base_dir}/annotated_images", exist_ok=True)
+    os.makedirs(f"{base_dir}/debug_frames", exist_ok=True)
+    os.makedirs(f"{base_dir}/stitched_outputs", exist_ok=True)
+    
+    # Move detection files
+    detection_files = glob.glob("detection_*.jpg")
+    for file in detection_files:
+        dest = f"{base_dir}/raw_detections/{os.path.basename(file)}"
+        if not os.path.exists(dest):
+            shutil.copy2(file, dest)
+            print(f"  Copied: {file} -> raw_detections/")
+    
+    # Move annotated files from rf_debug
+    rf_debug_files = glob.glob("rf_debug/annot_*.jpg")
+    for file in rf_debug_files:
+        dest = f"{base_dir}/annotated_images/{os.path.basename(file)}"
+        if not os.path.exists(dest):
+            shutil.copy2(file, dest)
+            print(f"  Copied: {file} -> annotated_images/")
+    
+    # Move debug frames
+    debug_files = glob.glob("debug_frame_*.jpg")
+    for file in debug_files:
+        dest = f"{base_dir}/debug_frames/{os.path.basename(file)}"
+        if not os.path.exists(dest):
+            shutil.copy2(file, dest)
+            print(f"  Copied: {file} -> debug_frames/")
+    
+    return base_dir
+
+def find_detection_images():
+    """
+    Find all detection images from annotated_images folder and select highest confidence for each symbol
+    """
+    all_detections = {}  # symbol -> list of detections
+    
+    # Look for successful detections in annotated_images folder only
+    annotated_files = glob.glob("detection_results/annotated_images/annotated_*.jpg")
+    print(f"Found {len(annotated_files)} successful detections in annotated_images")
+    
+    for file_path in annotated_files:
+        try:
+            # Parse filename: annotated_{symbol}_{timestamp}.jpg
+            filename = os.path.basename(file_path)
+            if filename.startswith('annotated_'):
+                parts = filename.replace('annotated_', '').replace('.jpg', '').split('_')
+                if len(parts) >= 2:
+                    symbol = parts[0]
+                    if symbol != "NA" and symbol:
+                        # Extract confidence from the actual image
+                        confidence = extract_confidence_from_image(file_path)
+                        mtime = os.path.getmtime(file_path)
+                        
+                        detection_info = {
+                            'symbol': symbol,
+                            'file_path': file_path,
+                            'timestamp': mtime,
+                            'confidence': confidence,
+                            'source': 'annotated'
+                        }
+                        
+                        # Group by symbol
+                        if symbol not in all_detections:
+                            all_detections[symbol] = []
+                        all_detections[symbol].append(detection_info)
+                        
+                        print(f"Found detection: {symbol}")
+        except Exception as e:
+            print(f"Error parsing {file_path}: {e}")
+    
+    # Select highest confidence detection for each symbol
+    best_detections = {}
+    for symbol, detections in all_detections.items():
+        # Sort by confidence (highest first), then by timestamp (most recent first)
+        detections.sort(key=lambda x: (x['confidence'], x['timestamp']), reverse=True)
+        best_detection = detections[0]
+        best_detections[symbol] = best_detection
+        
+        print(f"Selected {symbol} from {len(detections)} detections")
+    
+    if not best_detections:
+        print("⚠️ No successful detections found in annotated_images folder!")
+        print("Make sure your model_server.py has run and detected some symbols successfully.")
+        print("Only successful detections (not 'NA') are saved to annotated_images/")
+    
+    return best_detections
+
+
+def extract_confidence_from_image(image_path):
+    """
+    Extract confidence score from JSON file or return default
+    """
+    try:
+        # First try to find corresponding JSON file
+        json_path = image_path.replace('.jpg', '.json')
+        if os.path.exists(json_path):
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+                confidence = float(data.get('confidence', 0.5))
+                print(f"[CONFIDENCE] Read from JSON: {confidence:.3f} for {os.path.basename(image_path)}")
+                return confidence
+        
+        # If no JSON file, use default confidence
+        print(f"[CONFIDENCE] No JSON found for {os.path.basename(image_path)}, using default 0.5")
+        return 0.5  # Default confidence when no JSON is available
+        
+    except Exception as e:
+        print(f"Error extracting confidence from {image_path}: {e}")
+        return 0.5
+
+def create_simple_stitch(detections, output_dir="detection_results/stitched_outputs", images_per_row=5):
+    """
+    Create a grid-based stitch of unique detection images arranged in rows
+    """
+    if not detections:
+        print("No detections to stitch!")
+        return False
+    
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Generate timestamped filename
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_file = f"{output_dir}/unique_detections_{timestamp}.png"
+    
+    print(f"Creating stitched image with {len(detections)} detections in rows of {images_per_row}...")
+    
+    # Load and process images
+    images = []
+    image_info = []
+    
+    # Sort detections by symbol name for consistent ordering
+    sorted_detections = sorted(detections.items(), key=lambda x: x[0])
+    
+    for symbol, info in sorted_detections:
+        file_path = info['file_path']
+        try:
+            img = cv2.imread(file_path)
+            if img is not None:
+                # Resize image to standard size for grid layout
+                target_width = 200
+                target_height = 200
+                img_resized = cv2.resize(img, (target_width, target_height))
+                
+                images.append(img_resized)
+                image_info.append({
+                    'symbol': symbol,
+                    'confidence': info.get('confidence', 1.0),
+                    'original_path': file_path
+                })
+                print(f"Loaded: {symbol} from {os.path.basename(file_path)}")
+            else:
+                print(f"Warning: Could not load {file_path}")
+        except Exception as e:
+            print(f"Error loading {file_path}: {e}")
+    
+    if not images:
+        print("No valid images to stitch!")
+        return False
+    
+    # Calculate grid dimensions
+    num_images = len(images)
+    num_rows = (num_images + images_per_row - 1) // images_per_row  # Ceiling division
+    num_cols = min(images_per_row, num_images)
+    
+    # Image dimensions
+    img_width = 200
+    img_height = 200
+    label_height = 60  # Space for labels below each image
+    padding = 10
+    
+    # Calculate final canvas size
+    canvas_width = num_cols * img_width + (num_cols - 1) * padding
+    canvas_height = num_rows * (img_height + label_height) + (num_rows - 1) * padding + 80  # Extra for title
+    
+    # Create the canvas with white background
+    canvas = np.ones((canvas_height, canvas_width, 3), dtype=np.uint8) * 255
+    
+    # Add title at the top
+    title = f"Unique Symbol Detections - {num_images} Found"
+    title_y = 30
+    cv2.putText(canvas, title, (10, title_y), 
+               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
+    
+    # Place images in grid
+    start_y = 60  # After title
+    
+    for idx, (img, info) in enumerate(zip(images, image_info)):
+        # Calculate position in grid
+        row = idx // images_per_row
+        col = idx % images_per_row
+        
+        # Calculate pixel position
+        x = col * (img_width + padding)
+        y = start_y + row * (img_height + label_height + padding)
+        
+        # Place the image
+        canvas[y:y+img_height, x:x+img_width] = img
+        
+        # Add labels below the image
+        label_y = y + img_height + 20
+        
+        # Symbol name (larger text)
+        symbol_text = f"{info['symbol']}"
+        cv2.putText(canvas, symbol_text, 
+                   (x + 5, label_y), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
+        
+        # Add border around each image
+        cv2.rectangle(canvas, (x-1, y-1), (x+img_width, y+img_height), (200, 200, 200), 1)
+    
+    # Save the result
+    success = cv2.imwrite(output_file, canvas)
+    
+    if success:
+        print(f"\n✓ SUCCESS: Stitched image saved as '{output_file}'")
+        print(f"  Grid layout: {num_rows} rows × {num_cols} columns")
+        print(f"  Canvas size: {canvas_width} × {canvas_height}")
+        print(f"  Images per row: {images_per_row}")
+        print(f"  Unique symbols found:")
+        for info in image_info:
+            print(f"    • {info['symbol']}")
+        
+        # Create a summary JSON file
+        summary_file = f"{output_dir}/detection_summary_{timestamp}.json"
+        summary = {
+            'timestamp': timestamp,
+            'total_detections': num_images,
+            'grid_layout': f"{num_rows}x{num_cols}",
+            'images_per_row': images_per_row,
+            'output_file': output_file,
+            'symbols': [{'symbol': info['symbol'], 
+                        'source_file': os.path.basename(info['original_path'])} 
+                       for info in image_info]
+        }
+        
+        with open(summary_file, 'w') as f:
+            json.dump(summary, f, indent=2)
+        print(f"  Summary saved to: {summary_file}")
+        
+        return output_file
+    else:
+        print(f"✗ ERROR: Failed to save stitched image")
+        return False
+
+def main():
+    print("="*50)
+    print("SYMBOL DETECTION STITCHER")
+    print("="*50)
+    print(f"Working in: {os.getcwd()}")
+    
+    # First, organize all files into folders
+    base_dir = organize_files()
+    
+    # Find all detection images
+    detections = find_detection_images()
+    
+    if not detections:
+        print("\n❌ No detection images found!")
+        print("\nMake sure you have either:")
+        print("1. detection_*.jpg files (saved by model_server.py)")
+        print("2. rf_debug/annot_full_*.jpg files (saved by detector1)")
+        print("\nRun your detection system first, then run this script.")
+        return
+    
+    print(f"\n📸 Found {len(detections)} unique detections:")
+    for symbol, info in sorted(detections.items()):
+        print(f"  • {symbol}")
+    
+    # Create stitched image in grid layout
+    output_file = create_simple_stitch(detections)
+    
+    if output_file:
+        print(f"\n🎉 DONE! Files organized in '{base_dir}/':")
+        print(f"   � raw_detections/ - Original detection images")
+        print(f"   � annotated_images/ - Images with bounding boxes")
+        print(f"   📁 debug_frames/ - Debug frames from server")
+        print(f"   📁 stitched_outputs/ - Final stitched results")
+        print(f"\n📄 Latest output: {os.path.basename(output_file)}")
+    else:
+        print(f"\n❌ Failed to create stitched image")
+
+if __name__ == "__main__":
+    main()
